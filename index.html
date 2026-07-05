@@ -230,6 +230,56 @@
     state.top = clamp(state.top, 0, Math.max(0, window.innerHeight - h));
   }
 
+  // Persist each cluster's layout (position, zoom, orientation) across browser
+  // sessions. Selection is intentionally NOT saved — clusters restore unselected.
+  const STORAGE_KEY = 'mvr_clusters_v1';
+
+  function saveLayout() {
+    try {
+      const data = {};
+      for (const c of clusters) {
+        data[c.id] = {
+          left: c.left, top: c.top, scale: c.scale,
+          horizontal: c.horizontal, dock: c.dock,
+        };
+      }
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    } catch (_) {
+      // Storage is best-effort (private mode, quota); ignore failures.
+    }
+  }
+
+  function loadLayout() {
+    try {
+      return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  const savedLayout = loadLayout();
+
+  // Apply a saved layout to a freshly built cluster, re-clamping in case the
+  // viewport is smaller than when it was saved. Returns whether a saved entry
+  // was found (callers use this to skip default placement).
+  function restoreLayout(state) {
+    const s = savedLayout[state.id];
+    if (!s) return false;
+    if (s.horizontal) setOrientation(state, true); // reflows before we measure
+    state.dock = s.dock ?? null;
+    if (typeof s.scale === 'number') {
+      const w0 = state.el.offsetWidth;
+      const h0 = state.el.offsetHeight;
+      const canvasMax = Math.min(window.innerWidth / w0, window.innerHeight / h0);
+      state.scale = clamp(s.scale, MIN_SCALE, Math.min(MAX_SCALE, canvasMax));
+    }
+    if (typeof s.left === 'number') state.left = s.left;
+    if (typeof s.top === 'number') state.top = s.top;
+    clampIntoCanvas(state);
+    apply(state);
+    return true;
+  }
+
   // Apply a zoom toward a focal point, capped so the box can't leave the canvas
   // or overlap another cluster. focalLocal is the focal point in the cluster's
   // own unscaled coordinates; focalScreen is where that point should stay.
@@ -256,8 +306,9 @@
     apply(state);
   }
 
-  // Build one independent cluster from a list of button labels.
-  function createCluster(labels, left, top) {
+  // Build one independent cluster from a list of button labels. `id` is a stable
+  // key used to persist/restore this cluster's layout across sessions.
+  function createCluster(id, labels, left, top) {
     const el = document.createElement('div');
     el.className = 'cluster';
     for (const label of labels) {
@@ -273,6 +324,7 @@
 
     const state = {
       el,
+      id,
       left,
       top,
       scale: 1,
@@ -293,6 +345,7 @@
     apply(state);
     setupCluster(state);
     clusters.push(state);
+    state.restored = restoreLayout(state); // override defaults with saved layout
     return state;
   }
 
@@ -458,6 +511,8 @@
         state.moved = false;
         if (wasTap && btn) {
           selectButton(state, btn);
+        } else {
+          saveLayout(); // a drag/pinch changed the layout — persist it
         }
       }
     }
@@ -472,25 +527,31 @@
       const localX = (e.clientX - state.left) / state.scale;
       const localY = (e.clientY - state.top) / state.scale;
       applyZoom(state, state.scale * factor, e.clientX, e.clientY, localX, localY);
+      saveLayout();
     }, { passive: false });
   }
 
   const cluster1 = createCluster(
+    'segments',
     ['Illeum', 'R.Colon', 'Tv.Colon', 'L.Colon', 'S.Colon', 'Rectum'],
     40, 100,
   );
   const cluster2 = createCluster(
+    'actions',
     ['Injection', 'Withdrawal', 'Biopsy'],
     40, 100,
   );
   // Place the second cluster toward the right edge, clear of the first so the
-  // two don't start out overlapping.
-  cluster2.left = Math.max(
-    cluster1.left + cluster1.el.offsetWidth + 24,
-    window.innerWidth - cluster2.el.offsetWidth - 40,
-  );
-  clampIntoCanvas(cluster2);
-  apply(cluster2);
+  // two don't start out overlapping — but only on a fresh start (no saved layout
+  // restored the position already).
+  if (!cluster2.restored) {
+    cluster2.left = Math.max(
+      cluster1.left + cluster1.el.offsetWidth + 24,
+      window.innerWidth - cluster2.el.offsetWidth - 40,
+    );
+    clampIntoCanvas(cluster2);
+    apply(cluster2);
+  }
 
   // Keep every cluster inside the canvas after a viewport resize.
   window.addEventListener('resize', () => {
