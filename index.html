@@ -319,7 +319,9 @@
     }
     btn.classList.add('selected');
     state.selected = btn;
-    playDing();
+    // Fire the ding off the critical path so the selected state paints
+    // immediately — rapid taps stay responsive and we don't wait on audio.
+    setTimeout(playDing, 0);
 
     // Record the tap as a custom event on the active study's timeline. The
     // marker is the button's label text; best-effort and a no-op off-device.
