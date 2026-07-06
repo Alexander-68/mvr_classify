@@ -1,0 +1,20 @@
+{
+  "clusters": [
+    {
+      "id": "segments",
+      "exclusive": true,
+      "buttons": ["Illeum", "R.Colon", "Tv.Colon", "L.Colon", "S.Colon", "Rectum"]
+    },
+    {
+      "id": "actions",
+      "exclusive": false,
+      "buttons": ["Withdrawal", "Injection", "Hemostasis", "Biopsy", "Polyp"]
+    }
+  ],
+  "submenus": {
+    "Injection": ["Lift", "Hemostasis", "Botox", "Steroid", "Tattoo", "Contrast"],
+    "Hemostasis": ["Hemoclip", "Thermal", "APC", "Injection", "Band", "Topical", "Surgical"],
+    "Biopsy": ["Forceps", "FNA/FNB", "Brush", "Snare", "Suction"],
+    "Polyp": ["Forceps", "Cold Snare", "Hot Snare", "EMR", "ESD", "EFTR", "APC/Ablation", "Surgical"]
+  }
+}

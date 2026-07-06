@@ -784,58 +784,102 @@
     }, { passive: false });
   }
 
-  const cluster1 = createCluster(
-    'segments',
-    ['Illeum', 'R.Colon', 'Tv.Colon', 'L.Colon', 'S.Colon', 'Rectum'],
-    40, 100,
-  );
-  const cluster2 = createCluster(
-    'actions',
-    ['Withdrawal', 'Injection', 'Hemostasis', 'Biopsy', 'Polyp'],
-    40, 100,
-    false, // actions are independent: selecting one doesn't clear the others
-  );
-  // Place the second cluster toward the right edge, clear of the first so the
-  // two don't start out overlapping — but only on a fresh start (no saved layout
-  // restored the position already).
-  if (!cluster2.restored) {
-    cluster2.left = Math.max(
-      cluster1.left + cluster1.el.offsetWidth + 24,
-      window.innerWidth - cluster2.el.offsetWidth - 40,
-    );
-    clampIntoCanvas(cluster2);
-    apply(cluster2);
-    markHome(cluster2);
-  }
-
   // --- Modifier submenus ---------------------------------------------------
-  // A host button in cluster 2 can pop open an exclusive submenu of modifiers on
-  // long-press. Its buttons inject {marker:<host>, modifier:<label>, status?}
-  // rather than their own label as the marker. Each submenu is transient:
-  // created on open, and destroyed (its selection discarded) as soon as the host
-  // is deselected. It reuses createCluster, so it drags/pinches and calls
-  // reportInteractive() like any other cluster.
-  const POLYP_MODIFIERS =
-    ['Forceps', 'Cold Snare', 'Hot Snare', 'EMR', 'ESD', 'EFTR', 'APC/Ablation', 'Surgical'];
-  const HEMOSTASIS_MODIFIERS =
-    ['Hemoclip', 'Thermal', 'APC', 'Injection', 'Band', 'Topical', 'Surgical'];
-  const BIOPSY_MODIFIERS =
-    ['Forceps', 'FNA/FNB', 'Brush', 'Snare', 'Suction'];
-  const INJECTION_MODIFIERS =
-    ['Lift', 'Hemostasis', 'Botox', 'Steroid', 'Tattoo', 'Contrast'];
-
-  // Register each host: button element -> config carrying its live submenu (or
-  // null when closed). Labels match the createCluster call above.
-  const cluster2Buttons = [...cluster2.el.querySelectorAll('button')];
+  // A host button can pop open an exclusive submenu of modifiers on long-press.
+  // Its buttons inject {marker:<host>, modifier:<label>, status?} rather than
+  // their own label as the marker. Each submenu is transient: created on open,
+  // and destroyed (its selection discarded) as soon as the host is deselected.
+  // It reuses createCluster, so it drags/pinches and calls reportInteractive()
+  // like any other cluster. Hosts are registered from the config's `submenus`
+  // map (host label -> modifier labels) in buildFromConfig(), keyed to the
+  // button (in whichever built cluster holds it) whose label matches the key.
   const submenuHosts = new Map();
-  function registerSubmenu(label, id, modifiers) {
-    const btn = cluster2Buttons.find((b) => b.textContent.trim() === label);
-    if (btn) submenuHosts.set(btn, { marker: label, id, modifiers, submenu: null });
+
+  // Register a host: find the button across all built clusters whose label
+  // matches `label`, then map it to a config carrying its live submenu (null
+  // when closed) and the cluster that owns it (used to anchor submenu spawn
+  // placement). `id` is the submenu's stable layout-persistence key — deriving
+  // it from the label keeps saved positions stable across reloads.
+  function registerSubmenu(builtClusters, label, modifiers) {
+    for (const cl of builtClusters) {
+      const btn = [...cl.el.querySelectorAll('button')]
+        .find((b) => b.textContent.trim() === label);
+      if (btn) {
+        const id = label.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '-modifier';
+        submenuHosts.set(btn, { marker: label, id, modifiers, submenu: null, cluster: cl });
+        return;
+      }
+    }
   }
-  registerSubmenu('Polyp', 'polyp-modifier', POLYP_MODIFIERS);
-  registerSubmenu('Hemostasis', 'hemostasis-modifier', HEMOSTASIS_MODIFIERS);
-  registerSubmenu('Biopsy', 'biopsy-modifier', BIOPSY_MODIFIERS);
-  registerSubmenu('Injection', 'injection-modifier', INJECTION_MODIFIERS);
+
+  // Build the clusters and submenus from a loaded config object. A cluster's
+  // `exclusive` defaults to true (matches the original single-select "segments"
+  // cluster); set it false in the config for independent multi-select. Optional
+  // per-cluster `left`/`top` override the default spawn spot.
+  function buildFromConfig(config) {
+    const built = [];
+    for (const c of (config.clusters || [])) {
+      built.push(createCluster(
+        c.id, c.buttons || [],
+        typeof c.left === 'number' ? c.left : 40,
+        typeof c.top === 'number' ? c.top : 100,
+        c.exclusive !== false,
+      ));
+    }
+
+    // Fresh-start placement: keep the first cluster at its default spot and push
+    // each later cluster toward the right edge, clear of the first, so they don't
+    // start out overlapping. Skipped for a cluster restored from a saved layout
+    // or given an explicit position in the config.
+    const first = built[0];
+    for (let i = 1; i < built.length && first; i++) {
+      const c = built[i];
+      if (c.restored || typeof config.clusters[i].left === 'number') continue;
+      c.left = Math.max(
+        first.left + first.el.offsetWidth + 24,
+        window.innerWidth - c.el.offsetWidth - 40,
+      );
+      clampIntoCanvas(c);
+      apply(c);
+      markHome(c);
+    }
+
+    // Each key in `submenus` is a host button's label; the value is its modifiers.
+    for (const [label, modifiers] of Object.entries(config.submenus || {})) {
+      registerSubmenu(built, label, modifiers);
+    }
+  }
+
+  // Fail-loud banner shown when the config can't be loaded. The file is the sole
+  // source of menu content, so on failure we say why rather than come up blank.
+  function showConfigError(err) {
+    const box = document.createElement('div');
+    box.style.cssText = [
+      'position:fixed', 'left:50%', 'top:50%', 'transform:translate(-50%,-50%)',
+      'max-width:80vw', 'padding:16px 20px', 'border:2px solid #ffdd00',
+      'border-radius:10px', 'background:rgba(0,0,0,0.75)', 'color:#fff',
+      'font-family:system-ui,sans-serif', 'font-size:16px', 'line-height:1.4',
+      'text-align:center', 'z-index:9999', 'pointer-events:none',
+    ].join(';');
+    box.textContent = `Could not load mvr_annotate.json — ${err.message}`;
+    stage.appendChild(box);
+  }
+
+  // Load the menu content (clusters + submenus), then build the UI. The config
+  // file is the single source of truth: if it can't be fetched or parsed, fail
+  // loud (show the error, build nothing) rather than guess a layout.
+  async function init() {
+    let config;
+    try {
+      const res = await fetch('mvr_annotate.json', { cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      config = await res.json();
+    } catch (err) {
+      showConfigError(err);
+      return;
+    }
+    buildFromConfig(config);
+  }
 
   // Position a freshly opened submenu in open space that doesn't overlap any
   // other cluster: preferring beside its host (right, then left, then below /
@@ -884,7 +928,7 @@
     // find open space beside the host. Persist the chosen spot either way so it
     // is remembered next time.
     if (!restoreLayout(sub) || hitsOtherCluster(sub, clusterRect(sub))) {
-      placeSubmenuInOpenSpace(sub, cluster2);
+      placeSubmenuInOpenSpace(sub, host.cluster);
       clampIntoCanvas(sub);
       apply(sub);
       markHome(sub);
@@ -937,6 +981,9 @@
     }
     for (const c of clusters) apply(c);
   });
+
+  // Kick off: load the config, then build the menus.
+  init();
 </script>
 </body>
 </html>

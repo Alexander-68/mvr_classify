@@ -6,7 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A tiny, dependency-free static web project — no package manager or test framework, and the only "build" is zipping the files for distribution (see below). Everything lives in a single self-contained HTML file (inline `<style>` and `<script>`, no external assets).
 
-- `index.html` — the actual page: a fullscreen transparent `<canvas>` overlay carrying **button clusters** on top. Uses the Pointer Events API (`pointerdown`/`pointermove`/`pointerup`/`pointercancel`) to unify mouse, touch, and pen input in one code path, with a movement threshold (`DRAG_THRESHOLD` in the script) to distinguish a tap from a drag. See the button-cluster section below.
+- `index.html` — the actual page: a fullscreen transparent `<canvas>` overlay carrying **button clusters** on top. Uses the Pointer Events API (`pointerdown`/`pointermove`/`pointerup`/`pointercancel`) to unify mouse, touch, and pen input in one code path, with a movement threshold (`DRAG_THRESHOLD` in the script) to distinguish a tap from a drag. See the button-cluster section below. It holds **only the interaction/layout logic** — the menu *content* lives in `mvr_annotate.json` (below).
+- `mvr_annotate.json` — **the menu content**, split out from the code so labels/clusters/submenus can be edited without touching the logic. `index.html` `fetch()`es it once at startup (`init()`) and builds the UI from it (`buildFromConfig`); see [Menu content](#menu-content-mvr_annotatejson). This file is the **single source of truth** — there is no embedded fallback: if it can't be fetched/parsed the page **fails loud** with an on-screen banner (`showConfigError`) and builds no menus.
 - `favicon.svg` — the page icon, referenced by `index.html`.
 
 ## Running / viewing
@@ -18,8 +19,10 @@ Just open the `index.html` file with a web browser.
 Package the shipped files into `mvr_annotate.zip`:
 
 ```bash
-zip mvr_annotate.zip index.html favicon.svg
+zip mvr_annotate.zip index.html favicon.svg mvr_annotate.json
 ```
+
+> **Loading note:** because the page `fetch()`es `mvr_annotate.json` at startup, opening `index.html` directly via `file://` may be blocked by CORS in some browsers/WebViews (the fail-loud banner appears). Serve the folder over HTTP (e.g. `python3 -m http.server`) when viewing locally; on the MVR device it is served over the `LOCAL`/`HTTP(S)` scheme so `fetch` works.
 
 ## Button clusters (the core UI idea)
 
@@ -47,14 +50,47 @@ The interactive UI is organized into **clusters**. A cluster is a vertically sta
 - **Tight vertical stacking** — `gap: 0` and a `-2px` top margin on every button after the first overlap adjacent borders into a single shared line: one button's bottom outline *is* the next button's top outline. Internal corners are square; only the cluster's outer corners are rounded. The selected button gets `z-index: 1` so its full yellow outline paints above the shared edges.
 - **Appearance** — buttons have a transparent background with white text (yellow when selected), a `2px` border, and a text-shadow for legibility over the live camera preview. Horizontal padding is kept tight (`10px`) so there's little blank space beside the labels. Clusters are **not** named or tagged — just buttons.
 
-Clusters are built in JS by `createCluster(labels, left, top)` from a plain array of label strings, so **button names, counts, and the number of clusters are all configurable** — edit the arrays / `createCluster` calls near the bottom of the script. Current clusters:
+Clusters are built in JS by `createCluster(id, labels, left, top, exclusive)` from a plain array of label strings — but **you don't edit those calls to change menus**; the button names, counts, cluster count, and submenus all come from `mvr_annotate.json` (see [Menu content](#menu-content-mvr_annotatejson)). `buildFromConfig()` reads the config and issues the `createCluster` calls for you.
 
-- Cluster 1: `Illeum, R.Colon, Tv.Colon, L.Colon, S.Colon, Rectum`
-- Cluster 2 (non-exclusive selection): `Withdrawal, Injection, Hemostasis, Biopsy, Polyp`
-- Polyp submenu (transient, exclusive; opened by long-pressing Polyp): `Forceps, Cold Snare, Hot Snare, EMR, ESD, EFTR, APC/Ablation, Surgical`
-- Hemostasis submenu (transient, exclusive; opened by long-pressing Hemostasis): `Hemoclip, Thermal, APC, Injection, Band, Topical, Surgical`
-- Biopsy submenu (transient, exclusive; opened by long-pressing Biopsy): `Forceps, FNA/FNB, Brush, Snare, Suction`
-- Injection submenu (transient, exclusive; opened by long-pressing Injection): `Lift, Hemostasis, Botox, Steroid, Tattoo, Contrast`
+## Menu content (`mvr_annotate.json`)
+
+All menu *content* — the clusters, their buttons, and the long-press submenus — lives in `mvr_annotate.json`, kept separate from the interaction logic in `index.html`. **To add/rename/reorder menus, edit this file only** (then re-zip; no code change needed). `index.html` loads it once at startup via `fetch()` (`init()`) and builds the UI with `buildFromConfig()`. It is the single source of truth — a load/parse failure fails loud (see the file list above), not a silent fallback.
+
+Shape:
+
+```jsonc
+{
+  "clusters": [
+    // exclusive omitted/true => single-select; false => independent multi-select.
+    // optional "left"/"top" override the default spawn spot (else 40,100 for the
+    // first cluster; later clusters auto-place toward the right edge, clear of it).
+    { "id": "segments", "exclusive": true,  "buttons": ["Illeum", "R.Colon", ...] },
+    { "id": "actions",  "exclusive": false, "buttons": ["Withdrawal", "Injection", ...] }
+  ],
+  // Each key is a host button's LABEL (in any cluster); long-pressing it pops an
+  // exclusive submenu of the listed modifiers. The submenu's persistence key/id is
+  // derived from the label (`<slug>-modifier`), so renaming a host resets its saved
+  // submenu position. Registered by registerSubmenu(); a host with no matching
+  // button is silently ignored.
+  "submenus": {
+    "Injection": ["Lift", "Hemostasis", ...],
+    "Biopsy":    ["Forceps", "FNA/FNB", ...]
+  }
+}
+```
+
+Notes:
+- `id` is the cluster's stable **layout-persistence key** (`saveLayout`/`restoreLayout`) — changing it orphans that cluster's saved position/zoom/orientation.
+- A cluster's `id` must be unique; submenu ids are `<host-slug>-modifier` and must not collide with a cluster `id`.
+
+Current content:
+
+- Cluster `segments` (exclusive): `Illeum, R.Colon, Tv.Colon, L.Colon, S.Colon, Rectum`
+- Cluster `actions` (non-exclusive selection): `Withdrawal, Injection, Hemostasis, Biopsy, Polyp`
+- Injection submenu (transient, exclusive; long-press Injection): `Lift, Hemostasis, Botox, Steroid, Tattoo, Contrast`
+- Hemostasis submenu (transient, exclusive; long-press Hemostasis): `Hemoclip, Thermal, APC, Injection, Band, Topical, Surgical`
+- Biopsy submenu (transient, exclusive; long-press Biopsy): `Forceps, FNA/FNB, Brush, Snare, Suction`
+- Polyp submenu (transient, exclusive; long-press Polyp): `Forceps, Cold Snare, Hot Snare, EMR, ESD, EFTR, APC/Ablation, Surgical`
 
 ## Important: notifying the native Android host
 
