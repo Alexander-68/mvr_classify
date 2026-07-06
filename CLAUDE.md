@@ -102,6 +102,8 @@ window.MvrOverlay?.reportInteractive();
 
 **on the action that begins the interaction** (e.g. at the top of the `pointerdown` handler, and on `wheel` for zoom) — see the calls in the cluster handlers in `index.html`. This tells the native Android app that the gesture landed on a web-UI element, so it doesn't let the touch propagate through to the native UI underneath. Without this call, taps on web elements would fall through to Android as if the overlay wasn't there. This rule is unconditional: whenever you add a new interactive element or gesture, wire up `reportInteractive()` on its interaction-start event.
 
+**Timeline-event payload is open-ended.** `window.MvrOverlay?.injectTimelineEvent(<json-string>)` (built by `injectEvent()`) accepts an arbitrary JSON object — the bridge stores/forwards it as-is and does **not** limit the number or names of fields. The current `{marker, modifier?, status?}` shape is a *web-side convention*, not a bridge constraint. So deeper structures (e.g. a `submodifier` field or a `path: [...]` array for sub-sub-menus) are safe to emit whenever the web UI wants them — no native change needed to carry extra fields.
+
 ## Key implementation details in index.html
 
 - Canvas is sized to `window.innerWidth/innerHeight * devicePixelRatio` and uses `ctx.setTransform(dpr, 0, 0, dpr, 0, 0)` so drawing coordinates stay in CSS pixels while the backing store matches the display's real resolution.
