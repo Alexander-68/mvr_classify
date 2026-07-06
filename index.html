@@ -199,11 +199,18 @@
     return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
   }
 
+  // Angle (radians) of the line from a to b. Used to measure the twist of a
+  // two-finger gesture.
+  function angleBetween(a, b) {
+    return Math.atan2(b.y - a.y, b.x - a.x);
+  }
+
   const DRAG_THRESHOLD = 6; // px of movement before a tap counts as a drag
   const LONG_PRESS_MS = 500; // hold this long (without moving) for a long-press
   const MIN_SCALE = 0.4;
   const MAX_SCALE = 5;
-  const EDGE_FORCE = 40; // px of over-drag past top/bottom that flips to a row
+  const EDGE_FORCE = 40; // px of over-drag past an edge that snaps a cluster to it
+  const TWIST_FLIP_RAD = 45 * Math.PI / 180; // two-finger twist to flip orientation
 
   // Registry of all clusters, used for the "clusters must not overlap" rule.
   const clusters = [];
@@ -257,6 +264,26 @@
       if (l < or && l + w > ol && o.top + oh / 2 > ourCenter) ceil = Math.min(ceil, o.top);
     }
     return ceil;
+  }
+
+  // Where a docked cluster pins along its edge: it slides freely along the edge
+  // (following the finger) and is fixed on the perpendicular axis. Top/bottom
+  // stack against same-edge siblings via dockAnchor; left/right just sit flush.
+  function dockSlot(state, w, h, desiredL, desiredT) {
+    const maxL = Math.max(0, window.innerWidth - w);
+    const maxT = Math.max(0, window.innerHeight - h);
+    if (state.dock === 'top') {
+      const l = clamp(desiredL, 0, maxL);
+      return { l, t: dockAnchor(state, 'top', l, w, desiredT, h) };
+    }
+    if (state.dock === 'bottom') {
+      const l = clamp(desiredL, 0, maxL);
+      return { l, t: dockAnchor(state, 'bottom', l, w, desiredT, h) - h };
+    }
+    if (state.dock === 'left') {
+      return { l: 0, t: clamp(desiredT, 0, maxT) };
+    }
+    return { l: maxL, t: clamp(desiredT, 0, maxT) }; // right
   }
 
   // Clamp a cluster's top-left so its full (scaled) box stays inside the canvas.
@@ -371,9 +398,11 @@
       homeLeft: left, // intended position; where the cluster returns to after a
       homeTop: top,   // transient viewport shrink (e.g. on-screen keyboard)
       scale: 1,
-      baseVH: el.offsetHeight, // natural vertical (column) box height, unscaled
-      horizontal: false,       // true while docked as a row against top/bottom
-      dock: null,              // 'top' | 'bottom' | null — which edge it's docked to
+      horizontal: false,   // orientation, persisted; a row when true, else a column.
+                           // Set by a two-finger twist or by docking (which lays
+                           // the cluster along its edge); it is sticky otherwise.
+      dock: null,          // 'top' | 'bottom' | 'left' | 'right' | null — docked edge.
+                           // top/bottom force a row, left/right force a column.
       exclusive,            // true: one selection per cluster; false: independent
       transient,            // true: a pop-up submenu — not built at page load and
                             // its selection is discarded, but its position persists
@@ -385,9 +414,12 @@
       moved: false,
       longPress: false,      // did the single-pointer hold cross LONG_PRESS_MS?
       longPressTimer: null,
+      holdActionDone: false, // did the long-hold already open/close a submenu?
+      dragLocked: false,     // once a submenu spawned mid-hold, don't drag parent
       startX: 0, startY: 0,
       startLeft: 0, startTop: 0,
       pinchStartDist: 0, pinchStartScale: 1,
+      pinchStartAngle: 0,   // two-finger angle baseline, re-based after each flip
       focalX: 0, focalY: 0, // pinch focal point in cluster-local (pre-scale) coords
     };
 
@@ -471,19 +503,81 @@
     }
   }
 
+  // The long-press timer fired while the finger is still down. The whole
+  // long-press resolves right here — mid-hold — so there's immediate feedback
+  // and no guessing how long to hold or waiting for release. A submenu host pops
+  // its submenu open (or tears it down); every other button just toggles its own
+  // selection with an on/off status. Once resolved, the press is committed: the
+  // parent cluster can no longer be dragged by this gesture (dragLocked) and
+  // pointer-up won't re-toggle it (holdActionDone). To reposition instead, start
+  // dragging before the threshold — an early drag cancels this timer.
+  function fireLongPress(state) {
+    state.longPress = true;
+    // Only a clean single-finger hold on a button qualifies.
+    if (state.mode === 'drag' || state.mode === 'pinch') return;
+    if (state.pointers.size !== 1) return;
+    const btn = state.tapButton;
+    if (!btn) return;
+    const host = submenuHosts.get(btn);
+    if (host) {
+      if (btn.classList.contains('selected') && host.submenu) {
+        // Already open: a fresh long-hold tears it down.
+        unselectButton(state, btn, 'off');
+        closeSubmenu(host);
+      } else {
+        // Pop the submenu open now, while still pressing.
+        selectButton(state, btn, 'on');
+        openSubmenu(host);
+      }
+    } else if (btn.classList.contains('selected')) {
+      unselectButton(state, btn, 'off');
+    } else {
+      selectButton(state, btn, 'on');
+    }
+    state.holdActionDone = true;
+    state.dragLocked = true;
+  }
+
+  // (Re)establish the two-finger baseline: current spread (for zoom), angle (for
+  // twist), and focal point (kept pinned under the fingers' midpoint). Called at
+  // the start of a pinch and again after a twist-flip so zoom and twist continue
+  // smoothly across the orientation change.
+  function rebasePinch(state) {
+    const [p0, p1] = [...state.pointers.values()];
+    const m = midpoint(p0, p1);
+    state.pinchStartDist = dist(p0, p1) || 1;
+    state.pinchStartScale = state.scale;
+    state.pinchStartAngle = angleBetween(p0, p1);
+    state.focalX = (m.x - state.left) / state.scale;
+    state.focalY = (m.y - state.top) / state.scale;
+  }
+
   function beginPinch(state) {
     state.mode = 'pinch';
     state.tapButton = null;
     state.el.classList.remove('dragging');
     clearLongPress(state);
     state.longPress = false;
+    // A two-finger gesture is free-form manipulation (zoom / twist / move), so
+    // the cluster leaves any docked edge. Its orientation stays put (sticky) —
+    // only a deliberate twist changes it.
+    state.dock = null;
+    rebasePinch(state);
+  }
 
+  // A two-finger twist past TWIST_FLIP_RAD flips orientation (row <-> column).
+  // The reflow changes the box size, so re-clamp into the canvas and re-base the
+  // pinch to the new geometry, then carry on within the same gesture.
+  function twistDuringPinch(state) {
     const [p0, p1] = [...state.pointers.values()];
-    const m = midpoint(p0, p1);
-    state.pinchStartDist = dist(p0, p1) || 1;
-    state.pinchStartScale = state.scale;
-    state.focalX = (m.x - state.left) / state.scale;
-    state.focalY = (m.y - state.top) / state.scale;
+    let dA = angleBetween(p0, p1) - state.pinchStartAngle;
+    dA = Math.atan2(Math.sin(dA), Math.cos(dA)); // wrap to [-PI, PI]
+    if (Math.abs(dA) < TWIST_FLIP_RAD) return;
+    setOrientation(state, !state.horizontal);
+    clampIntoCanvas(state);
+    apply(state);
+    markHome(state);
+    rebasePinch(state); // fresh geometry + twist baseline for the next flip
   }
 
   function setupCluster(state) {
@@ -504,25 +598,14 @@
         state.startY = e.clientY;
         state.startLeft = state.left;
         state.startTop = state.top;
-        // If we're grabbing an already-docked row, its stored top is in
-        // horizontal-row coordinates (a thin box pinned to the edge). But the
-        // flip/unstick math reasons in vertical-stack coordinates, where
-        // desiredT is the top the vertical stack WOULD occupy and the bottom
-        // revert boundary sits a full stack-height (vH) above the edge. Left as
-        // is, unsticking a docked row would demand dragging almost a whole
-        // stack-height away from the edge. Re-seed startTop onto that boundary
-        // (bottom: anchor - vH; top: anchor) so a small pull off the edge
-        // unsticks it, matching how the top edge already behaves.
-        if (state.horizontal) {
-          const w0 = el.offsetWidth * state.scale;
-          const h0 = el.offsetHeight * state.scale;
-          const anchor = dockAnchor(state, state.dock, state.left, w0, state.top, h0);
-          state.startTop = state.dock === 'bottom' ? anchor - state.baseVH * state.scale : anchor;
-        }
-        // Start the long-press clock; a drag or second finger cancels it.
+        // Start the long-press clock; a drag or second finger cancels it. When
+        // it fires (finger still down, no drag), a submenu host pops its submenu
+        // open right then — see fireLongPress.
         state.longPress = false;
+        state.holdActionDone = false;
+        state.dragLocked = false;
         clearLongPress(state);
-        state.longPressTimer = setTimeout(() => { state.longPress = true; }, LONG_PRESS_MS);
+        state.longPressTimer = setTimeout(() => fireLongPress(state), LONG_PRESS_MS);
       } else if (state.pointers.size === 2) {
         beginPinch(state);
       }
@@ -537,6 +620,9 @@
       if (state.mode === 'pinch' && state.pointers.size >= 2) {
         const [p0, p1] = [...state.pointers.values()];
         const m = midpoint(p0, p1);
+        // Twist flips orientation (and re-bases the pinch); spread zooms; the
+        // midpoint translates. All three can happen in one two-finger gesture.
+        twistDuringPinch(state);
         const ratio = dist(p0, p1) / state.pinchStartDist;
         // Keep the focal point pinned under the fingers' midpoint.
         applyZoom(state, state.pinchStartScale * ratio, m.x, m.y, state.focalX, state.focalY);
@@ -546,7 +632,7 @@
       if (state.pointers.size === 1) {
         const dx = e.clientX - state.startX;
         const dy = e.clientY - state.startY;
-        if (!state.moved && Math.hypot(dx, dy) > DRAG_THRESHOLD) {
+        if (!state.moved && !state.dragLocked && Math.hypot(dx, dy) > DRAG_THRESHOLD) {
           state.moved = true;
           state.mode = 'drag';
           el.classList.add('dragging');
@@ -554,73 +640,64 @@
           state.longPress = false;
         }
         if (state.mode === 'drag') {
-          let desiredL = state.startLeft + dx;
-          let desiredT = state.startTop + dy;
-
-          // Orientation: flip to a horizontal row once the cluster is shoved
-          // past the top/bottom edge by EDGE_FORCE. The over-drag is judged
-          // against the *natural vertical* height (baseVH) — a constant that
-          // doesn't change when the box flips — so the flip can't feed back on
-          // its own trigger and oscillate. Top uses the box's top edge, bottom
-          // its bottom.
-          const vH = state.baseVH * state.scale;
-          const maxTopV = Math.max(0, window.innerHeight - vH);
-          const overTop = desiredT <= 0 ? -desiredT : 0;
-          const overBottom = (maxTopV > 0 && desiredT >= maxTopV) ? desiredT - maxTopV : 0;
-          if (!state.horizontal) {
-            if (overTop > EDGE_FORCE) { setOrientation(state, true); state.dock = 'top'; }
-            else if (overBottom > EDGE_FORCE) { setOrientation(state, true); state.dock = 'bottom'; }
-          }
-
-          // Measure the (possibly just-flipped) box.
           let w = el.offsetWidth * state.scale;
           let h = el.offsetHeight * state.scale;
-          let pL = clamp(desiredL, 0, Math.max(0, window.innerWidth - w));
+          const desiredL = state.startLeft + dx;
+          const desiredT = state.startTop + dy;
 
-          // While docked as a row, stack it against same-edge siblings: rest on
-          // the floor below a top-docked row, or hang from the ceiling above a
-          // bottom-docked row (dockAnchor). The dock zone is still reasoned in
-          // *vertical* height so the flip trigger and this revert test share a
-          // stable metric; revert to a vertical stack once the finger pulls the
-          // cluster off its resting slot back toward mid-screen.
-          if (state.horizontal) {
-            const anchor = dockAnchor(state, state.dock, pL, w, desiredT, h);
-            const stillDocked =
-              (state.dock === 'top' && desiredT <= anchor) ||
-              (state.dock === 'bottom' && desiredT >= anchor - vH);
-            if (!stillDocked) {
-              const wasBottom = state.dock === 'bottom';
-              setOrientation(state, false);
-              state.dock = null;
-              w = el.offsetWidth * state.scale;
+          // --- Dock a free cluster: shove one of its edges off-screen by
+          // EDGE_FORCE to snap it to that edge. Docking lays the cluster ALONG
+          // the edge — top/bottom => a horizontal row, left/right => a vertical
+          // column — so orientation follows the edge (and stays that way after,
+          // sticky). The largest overshoot wins so a corner picks one edge.
+          if (state.dock === null) {
+            const overTop    = Math.max(0, -desiredT);
+            const overBottom = Math.max(0, desiredT + h - window.innerHeight);
+            const overLeft   = Math.max(0, -desiredL);
+            const overRight  = Math.max(0, desiredL + w - window.innerWidth);
+            let pick = null; // [edge, horizontal, overshoot]
+            for (const c of [['top', true, overTop], ['bottom', true, overBottom],
+                             ['left', false, overLeft], ['right', false, overRight]]) {
+              if (c[2] > EDGE_FORCE && (!pick || c[2] > pick[2])) pick = c;
+            }
+            if (pick) {
+              setOrientation(state, pick[1]); // reflows synchronously
+              state.dock = pick[0];
+              w = el.offsetWidth * state.scale; // re-measure the flipped box
               h = el.offsetHeight * state.scale;
-              // Unstick from the bottom edge: keep the finger on the cluster's
-              // BOTTOM so the (now tall) vertical stack expands *upward*, above
-              // the pointer, instead of the finger holding the top and the box
-              // dropping down out of reach. Rebase the drag anchor to the finger
-              // and place the top a full box-height above it. (Top-edge unstick
-              // already reads right — the finger naturally holds the top there.)
-              if (wasBottom) {
-                state.startX = e.clientX;
-                state.startY = e.clientY;
-                state.startLeft = state.left;
-                state.startTop = e.clientY - h;
-                desiredL = state.startLeft;
-                desiredT = state.startTop;
-              }
-              pL = clamp(desiredL, 0, Math.max(0, window.innerWidth - w));
+              // Snap to the edge and re-base the drag onto that pinned spot, so
+              // further motion (and the undock test) is measured from the dock.
+              const slot = dockSlot(state, w, h, desiredL, desiredT);
+              state.left = slot.l; state.top = slot.t;
+              state.startX = e.clientX; state.startY = e.clientY;
+              state.startLeft = slot.l; state.startTop = slot.t;
+              apply(state);
+              return; // settle the snap this frame; resume dragging next move
             }
           }
 
-          // Target top: the stacked row slot while docked, else the free
-          // (clamped) drag position.
-          let pT;
-          if (!state.horizontal) {
+          let pL, pT;
+          if (state.dock === null) {
+            pL = clamp(desiredL, 0, Math.max(0, window.innerWidth - w));
             pT = clamp(desiredT, 0, Math.max(0, window.innerHeight - h));
-          } else if (state.dock === 'top') {
-            pT = clamp(dockAnchor(state, 'top', pL, w, desiredT, h), 0, Math.max(0, window.innerHeight - h));
           } else {
-            pT = clamp(dockAnchor(state, 'bottom', pL, w, desiredT, h) - h, 0, Math.max(0, window.innerHeight - h));
+            // Docked: pin along the edge (sliding to follow the finger), and
+            // undock once the finger pulls the box off that edge by more than
+            // EDGE_FORCE. Undocking keeps the orientation (sticky).
+            const slot = dockSlot(state, w, h, desiredL, desiredT);
+            const off =
+              state.dock === 'top'    ? desiredT - slot.t :
+              state.dock === 'bottom' ? slot.t - desiredT :
+              state.dock === 'left'   ? desiredL - slot.l :
+                                        slot.l - desiredL;
+            if (off > EDGE_FORCE) {
+              state.dock = null;
+              pL = clamp(desiredL, 0, Math.max(0, window.innerWidth - w));
+              pT = clamp(desiredT, 0, Math.max(0, window.innerHeight - h));
+            } else {
+              pL = clamp(slot.l, 0, Math.max(0, window.innerWidth - w));
+              pT = clamp(slot.t, 0, Math.max(0, window.innerHeight - h));
+            }
           }
 
           const fits = (l, t) => !hitsOtherCluster(state, { l, t, r: l + w, b: t + h });
@@ -654,40 +731,37 @@
       if (state.pointers.size === 0) {
         clearLongPress(state);
         const wasTap = state.mode !== 'drag' && state.mode !== 'pinch';
-        const wasLongPress = state.longPress;
+        const handledOnHold = state.holdActionDone;
         const btn = state.tapButton;
         el.classList.remove('dragging');
         state.mode = null;
         state.tapButton = null;
         state.moved = false;
         state.longPress = false;
+        state.holdActionDone = false;
+        state.dragLocked = false;
+        if (handledOnHold) {
+          // The long-hold already opened/closed the submenu while pressing and
+          // locked out the drag, so the parent didn't move — nothing to do here.
+          return;
+        }
         if (wasTap && btn) {
-          // Tapping/holding the already-selected button deselects it (dong);
-          // otherwise it's a select (ding). A long-press tags the event with an
-          // explicit on/off status; a short tap selects bare and finishes with
-          // "finish".
+          // Only short taps reach here — every long-press resolves mid-hold in
+          // fireLongPress. A short tap on a selected button deselects it and
+          // finishes with "finish" (dong), tearing down a host's submenu too;
+          // on an unselected button it selects bare (ding, no status/submenu).
           const host = submenuHosts.get(btn);
           if (host) {
-            const isSel = btn.classList.contains('selected');
-            if (isSel && wasLongPress && !host.submenu) {
-              // Long-press on an already-selected host with no submenu yet:
-              // don't deselect — (re)report "on" and pop the submenu open.
-              selectButton(state, btn, 'on');
-              openSubmenu(host);
-            } else if (isSel) {
-              // Short tap, or a long-press while the submenu is open: deselect
-              // the host and tear the submenu down.
-              unselectButton(state, btn, wasLongPress ? 'off' : 'finish');
+            if (btn.classList.contains('selected')) {
+              unselectButton(state, btn, 'finish');
               closeSubmenu(host);
             } else {
-              // Selecting the host: a long-press also pops the submenu open.
-              selectButton(state, btn, wasLongPress ? 'on' : undefined);
-              if (wasLongPress) openSubmenu(host);
+              selectButton(state, btn, undefined);
             }
           } else if (btn.classList.contains('selected')) {
-            unselectButton(state, btn, wasLongPress ? 'off' : 'finish');
+            unselectButton(state, btn, 'finish');
           } else {
-            selectButton(state, btn, wasLongPress ? 'on' : undefined);
+            selectButton(state, btn, undefined);
           }
         } else {
           markHome(state);  // a drag/pinch set a new intended position
@@ -834,13 +908,23 @@
   function reflowIntoViewport(c) {
     const w = c.el.offsetWidth * c.scale;
     const h = c.el.offsetHeight * c.scale;
-    c.left = clamp(c.homeLeft, 0, Math.max(0, window.innerWidth - w));
-    if (c.horizontal && c.dock === 'top') {
-      c.top = clamp(dockAnchor(c, 'top', c.left, w, c.homeTop, h), 0, Math.max(0, window.innerHeight - h));
-    } else if (c.horizontal && c.dock === 'bottom') {
-      c.top = clamp(dockAnchor(c, 'bottom', c.left, w, c.homeTop, h) - h, 0, Math.max(0, window.innerHeight - h));
+    const maxL = Math.max(0, window.innerWidth - w);
+    const maxT = Math.max(0, window.innerHeight - h);
+    if (c.dock === 'top') {
+      c.left = clamp(c.homeLeft, 0, maxL);
+      c.top = clamp(dockAnchor(c, 'top', c.left, w, c.homeTop, h), 0, maxT);
+    } else if (c.dock === 'bottom') {
+      c.left = clamp(c.homeLeft, 0, maxL);
+      c.top = clamp(dockAnchor(c, 'bottom', c.left, w, c.homeTop, h) - h, 0, maxT);
+    } else if (c.dock === 'left') {
+      c.left = 0;
+      c.top = clamp(c.homeTop, 0, maxT);
+    } else if (c.dock === 'right') {
+      c.left = maxL;
+      c.top = clamp(c.homeTop, 0, maxT);
     } else {
-      c.top = clamp(c.homeTop, 0, Math.max(0, window.innerHeight - h));
+      c.left = clamp(c.homeLeft, 0, maxL);
+      c.top = clamp(c.homeTop, 0, maxT);
     }
   }
 
