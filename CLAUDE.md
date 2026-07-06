@@ -15,10 +15,10 @@ Just open the `index.html` file with a web browser.
 
 ## Build step
 
-Package the shipped files into `mvr_classify.zip`:
+Package the shipped files into `mvr_annotate.zip`:
 
 ```bash
-zip mvr_classify.zip index.html favicon.svg
+zip mvr_annotate.zip index.html favicon.svg
 ```
 
 ## Button clusters (the core UI idea)
