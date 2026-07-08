@@ -17,7 +17,7 @@
     "Biopsy": ["Forceps", "FNA/FNB", "Brush", "Snare", "Suction"],
     "Polyp": ["Forceps", "Cold Snare", "Hot Snare", "EMR", "ESD", "EFTR", "APC/Ablation", "Surgical"]
   },
-  "ai": {
+  "aiScope": {
     "id": "ai_classes",
     "classes": [
       { "cls": 0, "label": "Blur", "color": "#ff69b4" },
