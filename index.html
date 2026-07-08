@@ -478,7 +478,7 @@
       cell.appendChild(label);
       cell.appendChild(pct);
       el.appendChild(cell);
-      indicators.push({ cls: it.cls, el: cell, pctEl: pct });
+      indicators.push({ cls: it.cls, el: cell, pctEl: pct, disp: null });
     }
     const state = initCluster(id, el, left, top, false, false);
     state.indicators = indicators;
@@ -1140,6 +1140,13 @@
     aiIdleTimer = setTimeout(() => setAiVisible(false), AI_IDLE_HIDE_MS);
   }
 
+  // Hysteresis for the displayed integer percent: keep showing the current value
+  // until the true value moves at least this far from it, so a score dithering
+  // around a rounding boundary (e.g. 45.5%) doesn't flicker between two integers.
+  // 0.8 makes the shown number step UP once the fraction reaches .8 and step back
+  // DOWN only at .2 — a dead band between 0.2 and 0.8 around each .5 boundary.
+  const AI_PCT_HYSTERESIS = 0.8;
+
   function updateAiIndicators(payload) {
     if (!aiCluster) return;
     const byCls = new Map();
@@ -1147,8 +1154,12 @@
     for (const ind of aiCluster.indicators) {
       const scr = byCls.get(ind.cls);
       // Only classes present in this packet update; others keep their last value.
-      if (typeof scr === 'number') {
-        ind.pctEl.textContent = `${Math.round(clamp(scr, 0, 1) * 100)}%`;
+      if (typeof scr !== 'number') continue;
+      const v = clamp(scr, 0, 1) * 100;
+      // Repaint only when the value leaves the dead band around the shown integer.
+      if (ind.disp === null || Math.abs(v - ind.disp) >= AI_PCT_HYSTERESIS) {
+        ind.disp = Math.round(v);
+        ind.pctEl.textContent = `${ind.disp}%`;
       }
     }
     noteAiActivity(); // data arrived — show the cluster and reset the idle timer
