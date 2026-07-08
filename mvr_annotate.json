@@ -16,5 +16,12 @@
     "Hemostasis": ["Hemoclip", "Thermal", "APC", "Injection", "Band", "Topical", "Surgical"],
     "Biopsy": ["Forceps", "FNA/FNB", "Brush", "Snare", "Suction"],
     "Polyp": ["Forceps", "Cold Snare", "Hot Snare", "EMR", "ESD", "EFTR", "APC/Ablation", "Surgical"]
+  },
+  "ai": {
+    "id": "ai_classes",
+    "classes": [
+      { "cls": 0, "label": "Blur", "color": "#ff69b4" },
+      { "cls": 1, "label": "PooP", "color": "#8a5a2b" }
+    ]
   }
 }
