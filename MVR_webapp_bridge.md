@@ -10,6 +10,8 @@ This lets a web page:
   desktop/mobile browser), and
 - read basic, non-sensitive **device identity** (device ID, hardware model, app
   and firmware version), and
+- read the current active **study path**, and
+- read the current **recording status**, and
 - (overlay mode only) opt a touch gesture out of native click-through.
 
 The bridge is attached to every external web app configured on the device, over
@@ -19,8 +21,8 @@ not exist.
 > Availability note: the bridge is a native
 > [`@JavascriptInterface`](https://developer.android.com/reference/android/webkit/JavascriptInterface)
 > object. All methods are synchronous and return primitive values (strings /
-> numbers). Only methods annotated for JavaScript are callable; nothing else on
-> the object is accessible.
+> numbers / booleans / null). Only methods annotated for JavaScript are
+> callable; nothing else on the object is accessible.
 
 ---
 
@@ -88,6 +90,66 @@ const fw    = window.MvrOverlay.getFirmwareVersion();  // may be null
 
 ---
 
+## Active study
+
+### `window.MvrOverlay.getCurrentStudyPath() -> string | null`
+
+Returns the current active study folder path, or `null` when there is no active
+study.
+
+```js
+const studyPath = window.MvrOverlay?.getCurrentStudyPath?.() ?? null;
+
+if (studyPath) {
+    // e.g. "CASE0001" or another MVR study folder path
+}
+```
+
+Notes:
+
+- The value is the study path used by MVR for the active study folder.
+- This method is read-only. It does not create, start, finish, or change a
+  study.
+
+---
+
+## Recording status
+
+### `window.MvrOverlay.isRecordingActive() -> boolean`
+
+Returns `true` when the main video recorder is currently active. A paused
+recording is still considered active because recording has been started and the
+current recording file/session has not been stopped yet.
+
+```js
+const recordingActive = window.MvrOverlay?.isRecordingActive?.() === true;
+```
+
+### `window.MvrOverlay.getRecordingState() -> string`
+
+Returns the exact main recording state:
+
+- `"STOPPED"` — no main recording is active.
+- `"RUNNING"` — main recording is actively writing video.
+- `"PAUSED"` — main recording is started but currently paused.
+
+```js
+const state = window.MvrOverlay?.getRecordingState?.() ?? "STOPPED";
+
+if (state === "RUNNING" || state === "PAUSED") {
+    // recording is active
+}
+```
+
+Notes:
+
+- These methods are read-only. They do not start, stop, pause, or resume
+  recording.
+- The status is the current in-device state at the moment the method is called;
+  call it again when you need a fresh value.
+
+---
+
 ## Study timeline: inject a custom event
 
 During an active study MVR keeps a **timeline** of events (study start/finish,
@@ -112,12 +174,14 @@ const ok = window.MvrOverlay?.injectTimelineEvent(
 Returns:
 
 - `true` — the event was accepted for recording.
-- `false` — there is **no active study with a created study folder** yet (the
-  study folder is created when the first file is saved into the study), or the
+- `false` — there is **no active study** (or it is already finished), or the
   argument is not a valid JSON object.
 
 Notes:
 
+- The study folder is created lazily. Injecting an event **triggers folder
+  creation** (like a capture/recording does): the first event on its own is
+  enough to materialize the study folder and its `timeline.ndjson` on disk.
 - The reserved keys `ts`, `ev` and `ip` are always set by MVR and cannot be
   overridden by the supplied JSON.
 - The call is best-effort and returns immediately; the actual disk write happens

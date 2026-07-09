@@ -237,6 +237,97 @@
     border-top-right-radius: 10px;
     border-bottom-right-radius: 10px;
   }
+
+  .recording-warning {
+    position: absolute;
+    z-index: 20;
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    min-width: 180px;
+    min-height: 82px;
+    padding: 13px 16px 17px;
+    border: 2px solid rgba(255, 255, 255, 0.95);
+    border-radius: 10px;
+    color: #fff;
+    font-family: system-ui, sans-serif;
+    font-size: 20px;
+    font-weight: 700;
+    line-height: 1.15;
+    text-align: center;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+    cursor: grab;
+    overflow: hidden;
+    touch-action: none;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .recording-warning.visible {
+    display: flex;
+  }
+
+  .recording-warning.dragging {
+    cursor: grabbing;
+  }
+
+  .recording-warning-message {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    min-height: 0;
+    flex: 1 1 auto;
+    overflow: auto;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+
+  .recording-warning-dismiss {
+    flex: 0 0 auto;
+    padding: 5px 12px;
+    border: 2px solid rgba(255, 255, 255, 0.92);
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.22);
+    color: #fff;
+    font: inherit;
+    font-size: 15px;
+    line-height: 1.1;
+    text-shadow: inherit;
+    cursor: pointer;
+    touch-action: none;
+  }
+
+  .recording-warning-resize {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    width: 30px;
+    height: 30px;
+    cursor: nwse-resize;
+    touch-action: none;
+  }
+
+  .recording-warning-resize::before,
+  .recording-warning-resize::after {
+    content: "";
+    position: absolute;
+    right: 6px;
+    bottom: 7px;
+    width: 14px;
+    border-bottom: 2px solid rgba(255, 255, 255, 0.9);
+    transform: rotate(-45deg);
+    transform-origin: right bottom;
+  }
+
+  .recording-warning-resize::after {
+    right: 6px;
+    bottom: 13px;
+    width: 8px;
+  }
 </style>
 </head>
 <body>
@@ -484,6 +575,214 @@
 
   const savedLayout = loadLayout();
 
+  // Recording-off warning. It is configured from mvr_annotate.json and remains
+  // inert when absent. Position/size persist across browser sessions; dismissal
+  // is session-only so a fresh session can warn again.
+  const RECORDING_WARNING_LAYOUT_KEY = 'mvr_recording_warning_v1';
+  const RECORDING_WARNING_DISMISS_KEY = 'mvr_recording_warning_dismissed_v1';
+  const RECORDING_WARNING_MIN_WIDTH = 180;
+  const RECORDING_WARNING_MIN_HEIGHT = 82;
+  let recordingWarning = null;
+  let recordingWarningDismissedInMemory = false;
+
+  function normalizeRecordingWarningConfig(spec) {
+    const text = typeof spec?.text === 'string' ? spec.text.trim() : '';
+    const backgroundColor = typeof spec?.backgroundColor === 'string' ? spec.backgroundColor.trim() : '';
+    if (!text || !backgroundColor) return null;
+    return { text, backgroundColor };
+  }
+
+  function loadRecordingWarningLayout() {
+    try {
+      return JSON.parse(localStorage.getItem(RECORDING_WARNING_LAYOUT_KEY)) || {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function saveRecordingWarningLayout() {
+    if (!recordingWarning) return;
+    try {
+      localStorage.setItem(RECORDING_WARNING_LAYOUT_KEY, JSON.stringify({
+        left: recordingWarning.left,
+        top: recordingWarning.top,
+        width: recordingWarning.width,
+        height: recordingWarning.height,
+      }));
+    } catch (_) {
+      // Storage is best-effort (private mode, quota); ignore failures.
+    }
+  }
+
+  function isRecordingWarningDismissed() {
+    if (recordingWarningDismissedInMemory) return true;
+    try {
+      return sessionStorage.getItem(RECORDING_WARNING_DISMISS_KEY) === '1';
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function dismissRecordingWarning() {
+    recordingWarningDismissedInMemory = true;
+    try {
+      sessionStorage.setItem(RECORDING_WARNING_DISMISS_KEY, '1');
+    } catch (_) {
+      // In-memory dismissal still applies for this page lifetime.
+    }
+    if (recordingWarning) recordingWarning.el.classList.remove('visible');
+  }
+
+  function readRecordingActive() {
+    const bridge = window.MvrOverlay;
+    if (!bridge) return null;
+    try {
+      if (typeof bridge.isRecordingActive === 'function') {
+        return bridge.isRecordingActive() === true;
+      }
+      if (typeof bridge.getRecordingState === 'function') {
+        const state = bridge.getRecordingState();
+        return state === 'RUNNING' || state === 'PAUSED';
+      }
+    } catch (_) {
+      return null;
+    }
+    return null;
+  }
+
+  function clampRecordingWarningLayout(state) {
+    const minW = Math.min(RECORDING_WARNING_MIN_WIDTH, window.innerWidth || RECORDING_WARNING_MIN_WIDTH);
+    const minH = Math.min(RECORDING_WARNING_MIN_HEIGHT, window.innerHeight || RECORDING_WARNING_MIN_HEIGHT);
+    state.width = clamp(state.width, minW, Math.max(minW, window.innerWidth));
+    state.height = clamp(state.height, minH, Math.max(minH, window.innerHeight));
+    state.left = clamp(state.left, 0, Math.max(0, window.innerWidth - state.width));
+    state.top = clamp(state.top, 0, Math.max(0, window.innerHeight - state.height));
+  }
+
+  function applyRecordingWarningLayout(state) {
+    state.el.style.left = `${state.left}px`;
+    state.el.style.top = `${state.top}px`;
+    state.el.style.width = `${state.width}px`;
+    state.el.style.height = `${state.height}px`;
+  }
+
+  function setupRecordingWarning(state, dismissBtn, resizeHandle) {
+    const el = state.el;
+
+    dismissBtn.addEventListener('pointerdown', (e) => {
+      window.MvrOverlay?.reportInteractive();
+      e.stopPropagation();
+    });
+    dismissBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      window.MvrOverlay?.reportInteractive();
+      dismissRecordingWarning();
+    });
+
+    el.addEventListener('pointerdown', (e) => {
+      window.MvrOverlay?.reportInteractive();
+      if (dismissBtn.contains(e.target)) return;
+      state.mode = resizeHandle.contains(e.target) ? 'resize' : 'drag';
+      state.startX = e.clientX;
+      state.startY = e.clientY;
+      state.startLeft = state.left;
+      state.startTop = state.top;
+      state.startWidth = state.width;
+      state.startHeight = state.height;
+      el.classList.toggle('dragging', state.mode === 'drag');
+      el.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    });
+
+    el.addEventListener('pointermove', (e) => {
+      if (!state.mode) return;
+      const dx = e.clientX - state.startX;
+      const dy = e.clientY - state.startY;
+      if (state.mode === 'drag') {
+        state.left = state.startLeft + dx;
+        state.top = state.startTop + dy;
+      } else {
+        state.width = state.startWidth + dx;
+        state.height = state.startHeight + dy;
+      }
+      clampRecordingWarningLayout(state);
+      applyRecordingWarningLayout(state);
+    });
+
+    function finishPointer(e) {
+      if (!state.mode) return;
+      try { el.releasePointerCapture(e.pointerId); } catch (_) {}
+      state.mode = null;
+      el.classList.remove('dragging');
+      saveRecordingWarningLayout();
+    }
+
+    el.addEventListener('pointerup', finishPointer);
+    el.addEventListener('pointercancel', finishPointer);
+  }
+
+  function buildRecordingWarning(spec) {
+    const config = normalizeRecordingWarningConfig(spec);
+    if (!config) return;
+
+    const el = document.createElement('div');
+    el.className = 'recording-warning';
+    el.style.backgroundColor = config.backgroundColor;
+
+    const message = document.createElement('div');
+    message.className = 'recording-warning-message';
+    message.textContent = config.text;
+    el.appendChild(message);
+
+    const dismissBtn = document.createElement('button');
+    dismissBtn.type = 'button';
+    dismissBtn.className = 'recording-warning-dismiss';
+    dismissBtn.textContent = 'Dismiss';
+    el.appendChild(dismissBtn);
+
+    const resizeHandle = document.createElement('span');
+    resizeHandle.className = 'recording-warning-resize';
+    resizeHandle.setAttribute('aria-hidden', 'true');
+    el.appendChild(resizeHandle);
+
+    stage.appendChild(el);
+
+    const saved = loadRecordingWarningLayout();
+    const width = typeof saved.width === 'number' ? saved.width : Math.min(340, Math.max(180, window.innerWidth - 32));
+    const height = typeof saved.height === 'number' ? saved.height : 132;
+    const state = {
+      el,
+      left: typeof saved.left === 'number' ? saved.left : (window.innerWidth - width) / 2,
+      top: typeof saved.top === 'number' ? saved.top : window.innerHeight - height - 32,
+      width,
+      height,
+      mode: null,
+      startX: 0,
+      startY: 0,
+      startLeft: 0,
+      startTop: 0,
+      startWidth: 0,
+      startHeight: 0,
+    };
+    recordingWarning = state;
+    clampRecordingWarningLayout(state);
+    applyRecordingWarningLayout(state);
+    setupRecordingWarning(state, dismissBtn, resizeHandle);
+  }
+
+  function showRecordingWarning() {
+    if (!recordingWarning || isRecordingWarningDismissed()) return;
+    clampRecordingWarningLayout(recordingWarning);
+    applyRecordingWarningLayout(recordingWarning);
+    recordingWarning.el.classList.add('visible');
+  }
+
+  function maybeShowRecordingWarning() {
+    if (!recordingWarning || isRecordingWarningDismissed()) return;
+    if (readRecordingActive() === false) showRecordingWarning();
+  }
+
   // Apply a saved layout to a freshly built cluster, re-clamping in case the
   // viewport is smaller than when it was saved. Returns whether a saved entry
   // was found (callers use this to skip default placement).
@@ -708,6 +1007,7 @@
       });
     }
     if (status) evt.status = status;
+    maybeShowRecordingWarning();
     window.MvrOverlay?.injectTimelineEvent(JSON.stringify(evt));
   }
 
@@ -1107,6 +1407,8 @@
   // cluster); set it false in the config for independent multi-select. Optional
   // per-cluster `left`/`top` override the default spawn spot.
   function buildFromConfig(config) {
+    buildRecordingWarning(config.recordingWarning);
+
     const built = [];
     for (const c of (config.clusters || [])) {
       built.push(createCluster(
@@ -1317,6 +1619,10 @@
       for (const c of clusters) reflowIntoViewport(c);
     }
     for (const c of clusters) apply(c);
+    if (recordingWarning) {
+      clampRecordingWarningLayout(recordingWarning);
+      applyRecordingWarningLayout(recordingWarning);
+    }
   });
 
   // --- Vision-AI inference stream ------------------------------------------

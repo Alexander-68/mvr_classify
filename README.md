@@ -12,6 +12,20 @@ committed here are only an **example set** (colonoscopy segments and actions) â€
 **edit `mvr_annotate.json` to match your own procedure before packaging.** The
 rest of the app (`index.html`) is generic and needs no changes.
 
+Optional `recordingWarning` config shows a dismissible warning when a user taps
+an annotation while the MVR bridge reports that recording is stopped:
+
+```json
+"recordingWarning": {
+  "text": "Recording is not active. Start recording on the MVR before adding timeline annotations.",
+  "backgroundColor": "#b91c1c"
+}
+```
+
+Omit this block, or leave either value empty, to disable the warning. The warning
+can be dragged and resized; its position and size are remembered locally. Tapping
+**Dismiss** hides it for the current browser session.
+
 ## Packaging
 
 Build the distribution zip from the three shipped files (nothing else â€” no

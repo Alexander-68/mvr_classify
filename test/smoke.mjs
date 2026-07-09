@@ -40,7 +40,7 @@ const EXPECT = {
   data: ['Visit', 'Current Disease', 'Open Forceps Size (mm)'],
   injectionSubmenu: ['Lift', 'Hemostasis', 'Botox', 'Steroid', 'Tattoo', 'Contrast'],
   hemostasisSubmenu: ['Hemoclip', 'Thermal', 'APC', 'Injection', 'Band', 'Topical', 'Surgical'],
-  ids: ['Segments', 'Actions', 'Data'],
+  ids: ['Data', 'Segments', 'Actions'],
 };
 
 const fail = (msg) => { console.error('✗ ' + msg); process.exitCode = 1; };
@@ -61,6 +61,7 @@ await page.addInitScript(() => {
   window.__events = [];
   window.MvrOverlay = {
     reportInteractive() {},
+    isRecordingActive() { return false; },
     injectTimelineEvent(json) {
       window.__events.push(JSON.parse(json));
     },
@@ -86,16 +87,16 @@ try {
   // Read the built clusters' button labels straight from the DOM.
   const clusters = await buttonClusterLabels();
 
-  if (clusters.length !== 3) fail(`expected 3 clusters at load, got ${clusters.length}`);
+if (clusters.length !== 3) fail(`expected 3 clusters at load, got ${clusters.length}`);
   else ok('three clusters built from config');
 
-  if (eq(clusters[0], EXPECT.segments)) ok('cluster 1 = segments buttons');
+  if (eq(clusters[0], EXPECT.data)) ok('cluster 1 = data buttons');
   else fail(`cluster 1 buttons mismatch: ${JSON.stringify(clusters[0])}`);
 
-  if (eq(clusters[1], EXPECT.actions)) ok('cluster 2 = actions buttons');
+  if (eq(clusters[1], EXPECT.segments)) ok('cluster 2 = segments buttons');
   else fail(`cluster 2 buttons mismatch: ${JSON.stringify(clusters[1])}`);
 
-  if (eq(clusters[2], EXPECT.data)) ok('cluster 3 = data buttons');
+  if (eq(clusters[2], EXPECT.actions)) ok('cluster 3 = actions buttons');
   else fail(`cluster 3 buttons mismatch: ${JSON.stringify(clusters[2])}`);
 
   const topIds = await page.$$eval('.cluster .cluster-id-label', (els) =>
@@ -137,6 +138,48 @@ try {
   // without moving so fireLongPress opens the submenu mid-hold, then release.
   const injection = actionsCluster.locator('.cluster-button', { hasText: 'Injection' });
   await longPress(injection);
+
+  await page.waitForSelector('.recording-warning.visible', { timeout: 2000 })
+    .then(() => ok('inactive recording warning appears on event injection'))
+    .catch(() => fail('inactive recording warning did not appear'));
+  const warningText = await page.locator('.recording-warning-message').textContent();
+  if (warningText === 'Recording is not active. Start recording on the MVR before adding timeline annotations.') {
+    ok('recording warning text comes from config');
+  } else {
+    fail(`recording warning text mismatch: ${JSON.stringify(warningText)}`);
+  }
+  const warning = page.locator('.recording-warning');
+  const warningBox = await warning.boundingBox();
+  await page.mouse.move(warningBox.x + warningBox.width / 2, warningBox.y + 20);
+  await page.mouse.down();
+  await page.mouse.move(warningBox.x + warningBox.width / 2 + 24, warningBox.y + 36);
+  await page.mouse.up();
+  const movedWarningBox = await warning.boundingBox();
+  if (movedWarningBox.x > warningBox.x + 10 && movedWarningBox.y > warningBox.y + 10) {
+    ok('recording warning can be moved');
+  } else {
+    fail(`recording warning did not move: before=${JSON.stringify(warningBox)} after=${JSON.stringify(movedWarningBox)}`);
+  }
+  await page.mouse.move(movedWarningBox.x + movedWarningBox.width - 5, movedWarningBox.y + movedWarningBox.height - 5);
+  await page.mouse.down();
+  await page.mouse.move(movedWarningBox.x + movedWarningBox.width + 31, movedWarningBox.y + movedWarningBox.height + 19);
+  await page.mouse.up();
+  const resizedWarningBox = await warning.boundingBox();
+  if (resizedWarningBox.width > movedWarningBox.width + 20 && resizedWarningBox.height > movedWarningBox.height + 12) {
+    ok('recording warning can be resized');
+  } else {
+    fail(`recording warning did not resize: before=${JSON.stringify(movedWarningBox)} after=${JSON.stringify(resizedWarningBox)}`);
+  }
+  const savedWarningLayout = await page.evaluate(() => JSON.parse(localStorage.getItem('mvr_recording_warning_v1')));
+  if (savedWarningLayout?.width === Math.round(resizedWarningBox.width) ||
+      Math.abs(savedWarningLayout?.width - resizedWarningBox.width) < 1) {
+    ok('recording warning size/position persisted');
+  } else {
+    fail(`recording warning layout not persisted: ${JSON.stringify(savedWarningLayout)}`);
+  }
+  await page.locator('.recording-warning-dismiss').click();
+  await page.waitForFunction(() => !document.querySelector('.recording-warning')?.classList.contains('visible'));
+  ok('recording warning dismisses for the session');
 
   await page.waitForFunction(() =>
     [...document.querySelectorAll('.cluster')].filter((el) => el.querySelector('button')).length === 4,
@@ -192,6 +235,9 @@ try {
   } else {
     fail(`nested event mismatch: ${JSON.stringify(lastEvent)}`);
   }
+  const warningVisibleAfterDismiss = await page.locator('.recording-warning.visible').count();
+  if (warningVisibleAfterDismiss === 0) ok('dismissed recording warning does not reappear in session');
+  else fail('dismissed recording warning reappeared');
 
   const shot = join(root, 'test', 'smoke.png');
   await page.screenshot({ path: shot });
