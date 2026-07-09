@@ -1036,6 +1036,17 @@
   const GRAPH_MAX_SAMPLES_DEFAULT = 216000; // in-memory sample cap default; override via
                                             // aiScope.graph.maxSamples (NOT persisted; see saveLayout)
 
+  // Recording-span overlay (drawn under the class curves). Study events carry an
+  // epoch-ms `ts`; graph samples are keyed on performance.now(). PERF_ORIGIN is
+  // the epoch ms of that clock's zero, so `ts - PERF_ORIGIN` maps an event onto
+  // the sample timebase (performance.timeOrigin + performance.now() ≈ Date.now()).
+  const PERF_ORIGIN = (typeof performance.timeOrigin === 'number' && performance.timeOrigin)
+    ? performance.timeOrigin
+    : ((performance.timing && performance.timing.navigationStart) || 0);
+  const REC_SPAN_FILL = 'rgba(255, 64, 64, 0.16)';   // shaded while recording
+  const REC_EDGE_COLOR = 'rgba(255, 80, 80, 0.9)';   // start/stop edge lines
+  const SNAPSHOT_COLOR = 'rgba(120, 210, 255, 0.9)'; // snapshot tick lines
+
   function createGraphCluster(id, classes, left, top, opts) {
     const saved = savedLayout[id] || {};
     const el = document.createElement('div');
@@ -1137,6 +1148,11 @@
     const tOld = tNew - windowMs;
     const xOf = (t) => clamp(x1 - (x1 - x0) * (tNew - t) / windowMs, x0, x1);
 
+    // Recording spans + snapshot ticks, painted under the class curves so the
+    // data reads on top. Times come from each event's epoch `ts`, mapped onto the
+    // sample timebase via PERF_ORIGIN; an ongoing recording extends to `tNew`.
+    drawRecordingOverlay(ctx, { x0, x1, y0, y1, xOf, tNew, tOld });
+
     ctx.lineWidth = 2;
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
@@ -1154,6 +1170,86 @@
       }
       ctx.stroke();
     });
+  }
+
+  // Fold the buffered study events into recording intervals and draw them as a
+  // shaded band across the plot, with edge lines at each start/stop and thin
+  // ticks for snapshots. `ts` is epoch ms (event's own timebase); `m.xOf` maps a
+  // sample-clock time to an X pixel, so we shift `ts` by PERF_ORIGIN first.
+  // A recording still open at the end extends to the right edge (`m.tNew`).
+  function drawRecordingOverlay(ctx, m) {
+    if (!recordingEvents.length) return;
+    const toPerf = (ts) => ts - PERF_ORIGIN;
+    // Events may arrive slightly out of order across replay/reconnect — sort by
+    // ts before folding. Only entries with a numeric ts can be placed.
+    const evs = recordingEvents
+      .filter((e) => typeof e.ts === 'number')
+      .slice()
+      .sort((a, b) => a.ts - b.ts);
+
+    // Build [start, end] intervals in epoch ms; end === null means still recording.
+    const spans = [];
+    const snaps = [];
+    let open = null;
+    for (const e of evs) {
+      switch (e.ev) {
+        case 'rec_start':
+        case 'rec_resume':
+          if (open === null) open = e.ts;
+          break;
+        case 'rec_pause':
+        case 'rec_stop':
+        case 'rec_error':
+          if (open !== null) { spans.push([open, e.ts]); open = null; }
+          break;
+        case 'snapshot':
+          snaps.push(e.ts);
+          break;
+      }
+    }
+    if (open !== null) spans.push([open, null]);
+
+    const { x0, x1, y0, y1, xOf, tNew, tOld } = m;
+    // A boundary time is a real, drawable edge only when it falls inside the
+    // visible window — otherwise its clamped X is just the window cropping the
+    // band, not the actual start/stop moment.
+    const inWindow = (p) => p >= tOld && p <= tNew;
+    const edgeLine = (p) => {
+      const x = xOf(p);
+      ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y1); ctx.stroke();
+    };
+    // Shaded recording bands + start/stop edge lines.
+    for (const [start, end] of spans) {
+      const pStart = toPerf(start);
+      const pEnd = end === null ? tNew : toPerf(end);
+      const left = xOf(pStart);   // xOf clamps to [x0, x1]
+      const right = xOf(pEnd);
+      if (right <= left) continue; // span lies entirely outside the visible window
+      ctx.fillStyle = REC_SPAN_FILL;
+      ctx.fillRect(left, y0, right - left, y1 - y0);
+      ctx.strokeStyle = REC_EDGE_COLOR;
+      ctx.lineWidth = 1.5;
+      if (inWindow(pStart)) edgeLine(pStart);
+      if (end !== null && inWindow(pEnd)) edgeLine(pEnd);
+    }
+
+    // Snapshot ticks: short dashed verticals so they read distinctly from the
+    // recording edges.
+    if (snaps.length) {
+      ctx.save();
+      ctx.strokeStyle = SNAPSHOT_COLOR;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([3, 3]);
+      for (const ts of snaps) {
+        const x = xOf(toPerf(ts));
+        if (x <= x0 || x >= x1) continue;
+        ctx.beginPath();
+        ctx.moveTo(x, y0);
+        ctx.lineTo(x, y1);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
   }
 
   // Append one time sample (the current moving average of every class). Samples
@@ -2012,10 +2108,13 @@
   // each score into its class indicator as a 0..100%. EventSource auto-reconnects
   // if the connection drops.
 
-  // The cluster is only shown while inference data is flowing. Each packet marks
-  // activity: reveal the cluster and (re)arm a timer that hides it again once the
-  // stream has been silent for AI_IDLE_HIDE_MS. display:none also drops it from
-  // the no-overlap checks while hidden, which is what we want.
+  // Each packet marks activity: reveal the live cluster + graph and (re)arm a
+  // timer. When the stream goes silent for AI_IDLE_HIDE_MS, hide the live
+  // indicator squares (they carry no meaning once data stops) but KEEP the
+  // history graph on screen so the user can still study the trace. The graph
+  // therefore lingers after the stream stops; it is cleared only on page reload
+  // (or a fresh study). display:none also drops the squares from the no-overlap
+  // checks while hidden, which is what we want.
   const AI_IDLE_HIDE_MS = 2000;
   let aiIdleTimer = null;
 
@@ -2027,7 +2126,10 @@
   function noteAiActivity() {
     setAiVisible(true);
     if (aiIdleTimer) clearTimeout(aiIdleTimer);
-    aiIdleTimer = setTimeout(() => setAiVisible(false), AI_IDLE_HIDE_MS);
+    // Idle: hide only the live squares; leave the graph up for analysis.
+    aiIdleTimer = setTimeout(() => {
+      if (aiCluster) aiCluster.el.style.display = 'none';
+    }, AI_IDLE_HIDE_MS);
   }
 
   // Hysteresis for the displayed integer percent: keep showing the current value
@@ -2080,8 +2182,59 @@
     // onerror is non-fatal: the browser reconnects automatically.
   }
 
-  // Kick off: load the config and build the menus, then open the AI stream.
-  init().then(startAiStream);
+  // --- Recording / study event stream --------------------------------------
+  // A second, independent SSE feed (/study/events) mirrors the device's study
+  // timeline line-for-line: recording start/pause/resume/stop/error, snapshots,
+  // study lifecycle, and signal changes (see MVR_homeweb_sse.md). We fold the
+  // recording-relevant events into an in-memory array and overlay them on the
+  // aiScope history graph (shaded recording spans, snapshot ticks). This buffer
+  // is NON-persistent: it lives only for the current page session and is reset
+  // when a new study begins.
+  //
+  // We store each event object verbatim and rely on its own epoch-ms `ts` as the
+  // timebase — the graph overlay maps `ts` onto the sample clock via PERF_ORIGIN
+  // (see drawRecordingOverlay), so no receive-time stamp is needed.
+  const recordingEvents = [];
+
+  // The `ev` names we keep for the graph overlay: recording lifecycle plus
+  // snapshots. Other events (study_*, signal_*, ext, unknown) are pass-through.
+  const RECORDING_EVENT_NAMES = new Set([
+    'rec_start', 'rec_pause', 'rec_resume', 'rec_stop', 'rec_error', 'snapshot',
+  ]);
+
+  function handleStudyEvent(ev) {
+    if (!ev || typeof ev.ev !== 'string') return;
+    // A new study invalidates the prior study's collected events. (The connect
+    // replay buffer can include the tail of a just-ended study; resetting here
+    // keeps the buffer scoped to the current study.)
+    if (ev.ev === 'study_start') {
+      recordingEvents.length = 0;
+      if (aiGraph) drawGraph(aiGraph); // clear any spans from the previous study
+      return;
+    }
+    if (RECORDING_EVENT_NAMES.has(ev.ev)) {
+      recordingEvents.push(ev);         // keep the raw event; `ts` is its timebase
+      if (aiGraph) drawGraph(aiGraph);  // reflect the new span/tick immediately
+    }
+  }
+
+  function startStudyStream() {
+    if (!window.EventSource) return; // no SSE support — nothing to collect
+    const es = new EventSource('/study/events');
+    es.onmessage = (e) => {
+      let ev;
+      try {
+        ev = JSON.parse(e.data); // one timeline event object per message
+      } catch (_) {
+        return; // ignore malformed events
+      }
+      handleStudyEvent(ev);
+    };
+    // onerror is non-fatal: EventSource reconnects (and resumes via Last-Event-ID).
+  }
+
+  // Kick off: load the config and build the menus, then open both SSE streams.
+  init().then(() => { startAiStream(); startStudyStream(); });
 </script>
 </body>
 </html>
