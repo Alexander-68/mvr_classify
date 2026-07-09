@@ -1,6 +1,11 @@
 {
   "clusters": [
     {
+      "id": "Data",
+      "exclusive": true,
+      "buttons": ["Visit", "Current Disease", "Open Forceps Size (mm)"]
+    },
+    {
       "id": "Segments",
       "exclusive": true,
       "buttons": ["Illeum", "R.Colon", "Tv.Colon", "L.Colon", "S.Colon", "Rectum"]
@@ -9,11 +14,6 @@
       "id": "Actions",
       "exclusive": false,
       "buttons": ["Status", "Withdrawal", "Injection", "Hemostasis", "Biopsy", "Polyp"]
-    },
-    {
-      "id": "Data",
-      "exclusive": true,
-      "buttons": ["Visit", "Current Disease", "Open Forceps Size (mm)"]
     }
   ],
   "submenus": {
