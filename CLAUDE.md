@@ -44,7 +44,7 @@ The interactive UI is organized into **clusters**. A cluster is a vertically sta
   - long-press, already selected → **deselect**, `status: "off"`
 
   A `setTimeout` started on `pointerdown` fires at `LONG_PRESS_MS`; a drag (crossing `DRAG_THRESHOLD`) or a second finger cancels it first. **A long-press resolves the moment that timer fires — mid-hold, while the finger is still down** (`fireLongPress`), not on release: you get immediate feedback and never have to guess how long to hold. Resolving mid-hold **locks the parent cluster's drag** (`state.dragLocked`) so the same gesture can't also reposition it, and marks `state.holdActionDone` so pointer-up is a no-op. To reposition instead, start dragging **before** `LONG_PRESS_MS` — the early drag cancels the timer. **Short taps** (both bare-select and `finish`-deselect) still resolve on **pointer-up**. `injectEvent()` builds the JSON. This mid-hold behavior is uniform across every button, including [submenu hosts](#pop-up-submenus-host--modifiers).
-- **Pop-up submenus (host → modifiers)** — a button can own a **transient submenu cluster**. Several cluster-2 buttons are registered hosts (`submenuHosts`, a `button → config` Map): long-pressing **Injection**, **Hemostasis**, **Biopsy**, or **Polyp** opens an *exclusive* submenu of that host's modifiers. Each submenu is a normal cluster built by `createCluster` (so it drags/pinches/flips and calls `reportInteractive()`), created with `transient = true` — which now only means it's **not built at page load** and its **selection** is discarded on close; its **position/zoom/orientation DO persist** (`saveLayout` no longer skips transient clusters, keyed by the submenu's stable `id`). It carries `state.markerOverride = <host>`, so its buttons inject `{"marker":<host>,"modifier":<label>, status?}` — the marker is the host button, the pressed submenu button is the `modifier`, and `status` follows the usual rules (bare / `finish` / `on` / `off`). **Spawn placement**: on open it restores its saved spot if one exists and is still clear; otherwise `placeSubmenuInOpenSpace()` finds open space that doesn't overlap any other cluster — preferring beside the host (right, left, below, above), then a grid scan of the canvas, and only sitting beside the host on top of another cluster if nothing is clear. The chosen spot is saved on open, and every drag/zoom re-saves it (`saveLayout` mutates the in-memory `savedLayout` so a re-opened submenu reads its latest position within the session too). Lifecycle: the submenu opens **mid-hold, while the finger is still down** — `fireLongPress(state)` (the `LONG_PRESS_MS` timer callback) calls `openSubmenu(host)` the moment the hold crosses the threshold, so there's immediate feedback and no need to guess how long to hold or wait for release. `closeSubmenu(host)` removes the element and splices it out of `clusters`. A long-hold on a submenu host **opens** it whether the host is currently unselected (selects it, reports `on`) or already selected with no submenu open (keeps it selected, re-reports `on`); it **closes** (deselect + report `off`) when the submenu is already open. **Once the submenu spawns mid-hold the parent cluster's drag is locked** (`state.dragLocked`) so the same gesture can't also reposition the host, and `state.holdActionDone` makes pointer-up a no-op for the host (the toggle already happened). To reposition the host instead, start dragging **before** `LONG_PRESS_MS` — an early drag cancels the timer, so the submenu never opens. Short taps still resolve on **pointer-up**, keyed on `submenuHosts.get(btn)`: a short tap selects an unselected host bare (no submenu) or finishes + closes a selected one (`finish`). **Opt-in `openOnTap`** (per-submenu config flag, default off) makes a short tap on an unselected host *also* open its submenu right then (still a bare select, `openOnTap` in the host config) — the deselect+close path is unchanged, and long-press still opens/closes as always. Non-host buttons still resolve their long-press on release. Each config holds its own live `submenu` (or `null`). Register a new host with `registerSubmenu(label, id, modifiers)`.
+- **Pop-up submenus (host -> modifiers, nested)** — any button whose label is a key in config `submenus` can own a **transient submenu cluster**. This is not limited to top-level clusters: when a submenu opens, its buttons are checked against the same `submenus` map, so a submenu button can become a sub-submenu host without changing the config shape. Each submenu is a normal cluster built by `createCluster` (so it drags/pinches/flips and calls `reportInteractive()`), created with `transient = true` — it is **not built at page load**, its **selection** is discarded on close, and its **position/zoom/orientation persist** under a stable path-derived `id`. First-level submenu buttons inject `{"marker":<host>,"modifier":<label>,status?}`; deeper buttons keep the root marker and append `modifier2`, `modifier3`, etc. Example: `Injection -> Hemostasis -> Hemoclip` injects `{"marker":"Injection","modifier":"Hemostasis","modifier2":"Hemoclip"}`. **Spawn placement**: on open it restores its saved spot if one exists and is still clear; otherwise `placeSubmenuInOpenSpace()` finds open space that doesn't overlap any other cluster — preferring beside the host (right, left, below, above), then a grid scan of the canvas, and only sitting beside the host on top of another cluster if nothing is clear. The chosen spot is saved on open, and every drag/zoom re-saves it. Lifecycle: the submenu opens **mid-hold, while the finger is still down** — `fireLongPress(state)` calls `openSubmenu(host)` the moment the hold crosses the threshold. `closeSubmenu(host)` recursively removes descendant submenus, removes their host registrations, removes the element, and splices it out of `clusters`. A long-hold on a submenu host **opens** it whether the host is currently unselected (selects it, reports `on`) or already selected with no submenu open (keeps it selected, re-reports `on`); it **closes** (deselect + report `off`) when the submenu is already open. Short taps still resolve on **pointer-up**, keyed on `submenuHosts.get(btn)`: a short tap selects an unselected host bare (no submenu) or finishes + closes a selected one (`finish`). **Opt-in `openOnTap`** still works at every level. To prevent endless recursive popups, a submenu button is not registered as a host when its label is already in that open path.
 - **Tap vs. drag** — a pointer that moves less than `DRAG_THRESHOLD` counts as a tap (toggles selection); more counts as a drag (reposition). A two-finger gesture is always a pinch, never a select.
 - **Uniform button size** — every button in a cluster has the **same box size**: there's no fixed width (buttons hug the text), so the cluster is as wide as its widest label and the flex column's default `align-items: stretch` makes every button match that width. `font-size`/`font-weight` are constant (they drive layout), so selecting a button never changes its box or reflows the stack. The label lives in an inner `<span class="label">`; the idle label sits at `transform: scale(0.8)` and the selected one at `scale(1)`, so the selected text enlarges *within its existing button area* rather than growing the button. "Bold" emphasis is faked with an extra text-shadow (not a weight change) to keep layout fixed, and `overflow: hidden` guards against spill.
 - **Tight vertical stacking** — `gap: 0` and a `-2px` top margin on every button after the first overlap adjacent borders into a single shared line: one button's bottom outline *is* the next button's top outline. Internal corners are square; only the cluster's outer corners are rounded. The selected button gets `z-index: 1` so its full yellow outline paints above the shared edges.
@@ -67,11 +67,10 @@ Shape:
     { "id": "segments", "exclusive": true,  "buttons": ["Illeum", "R.Colon", ...] },
     { "id": "actions",  "exclusive": false, "buttons": ["Withdrawal", "Injection", ...] }
   ],
-  // Each key is a host button's LABEL (in any cluster); long-pressing it pops an
-  // exclusive submenu of the listed modifiers. The submenu's persistence key/id is
-  // derived from the label (`<slug>-modifier`), so renaming a host resets its saved
-  // submenu position. Registered by registerSubmenu(); a host with no matching
-  // button is silently ignored.
+  // Each key is a host button's LABEL. The host can live in a top-level cluster
+  // or inside another submenu; long-pressing it pops an exclusive submenu of the
+  // listed modifiers. A submenu's persistence key/id is derived from its open
+  // path, so renaming a host or ancestor resets that saved submenu position.
   //
   // A submenu value is EITHER the modifier array directly, OR an object
   // { "modifiers": [...], "openOnTap": true }. `openOnTap` (default false) makes
@@ -81,23 +80,27 @@ Shape:
   // The bare-array form is equivalent to openOnTap:false.
   "submenus": {
     "Injection": ["Lift", "Hemostasis", ...],                       // array form => openOnTap:false
-    "Biopsy":    { "openOnTap": true, "modifiers": ["Forceps", ...] }
+    "Biopsy":    { "openOnTap": true, "modifiers": ["Forceps", ...] },
+    // If "Hemostasis" appears inside another submenu, this same entry makes it
+    // a nested host there too.
+    "Hemostasis": ["Hemoclip", "Thermal", ...]
   }
 }
 ```
 
 Notes:
 - `id` is the cluster's stable **layout-persistence key** (`saveLayout`/`restoreLayout`) — changing it orphans that cluster's saved position/zoom/orientation.
-- A cluster's `id` must be unique; submenu ids are `<host-slug>-modifier` and must not collide with a cluster `id`.
+- A cluster's `id` must be unique; submenu ids are path-derived (`<host-slug>-modifier`, `<root-slug>-<modifier-slug>-modifier`, ...), and must not collide with a cluster `id`.
 
 Current content:
 
 - Cluster `segments` (exclusive): `Illeum, R.Colon, Tv.Colon, L.Colon, S.Colon, Rectum`
-- Cluster `actions` (non-exclusive selection): `Withdrawal, Injection, Hemostasis, Biopsy, Polyp`
+- Cluster `actions` (non-exclusive selection): `Status, Withdrawal, Injection, Hemostasis, Biopsy, Polyp`
 - Injection submenu (transient, exclusive; long-press Injection): `Lift, Hemostasis, Botox, Steroid, Tattoo, Contrast`
 - Hemostasis submenu (transient, exclusive; long-press Hemostasis): `Hemoclip, Thermal, APC, Injection, Band, Topical, Surgical`
 - Biopsy submenu (transient, exclusive; long-press Biopsy): `Forceps, FNA/FNB, Brush, Snare, Suction`
-- Polyp submenu (transient, exclusive; long-press Polyp): `Forceps, Cold Snare, Hot Snare, EMR, ESD, EFTR, APC/Ablation, Surgical`
+- Polyp submenu (transient, exclusive; long-press Polyp): `Forceps, Cold Snare, Hot Snare, EMR, ESD, EFTR, APC/Ablation, Part.Resected, Fully Resected, Surgical`
+- Status submenu (transient, exclusive; tap or long-press Status): `Normal, Inaccessible, Not Explored, Ulcer.Colitis, Infect.Colitis, Ischem.Colitis, Crohn's, Diverticulosis, Diverticulitis, Hemorrhoids, Cancer/Tumor`
 
 ## Important: notifying the native Android host
 
@@ -109,7 +112,7 @@ window.MvrOverlay?.reportInteractive();
 
 **on the action that begins the interaction** (e.g. at the top of the `pointerdown` handler, and on `wheel` for zoom) — see the calls in the cluster handlers in `index.html`. This tells the native Android app that the gesture landed on a web-UI element, so it doesn't let the touch propagate through to the native UI underneath. Without this call, taps on web elements would fall through to Android as if the overlay wasn't there. This rule is unconditional: whenever you add a new interactive element or gesture, wire up `reportInteractive()` on its interaction-start event.
 
-**Timeline-event payload is open-ended.** `window.MvrOverlay?.injectTimelineEvent(<json-string>)` (built by `injectEvent()`) accepts an arbitrary JSON object — the bridge stores/forwards it as-is and does **not** limit the number or names of fields. The current `{marker, modifier?, status?}` shape is a *web-side convention*, not a bridge constraint. So deeper structures (e.g. a `submodifier` field or a `path: [...]` array for sub-sub-menus) are safe to emit whenever the web UI wants them — no native change needed to carry extra fields.
+**Timeline-event payload is open-ended.** `window.MvrOverlay?.injectTimelineEvent(<json-string>)` (built by `injectEvent()`) accepts an arbitrary JSON object — the bridge stores/forwards it as-is and does **not** limit the number or names of fields. The current `{marker, modifier?, modifier2?, modifier3?, status?}` shape is a *web-side convention*, not a bridge constraint. Deeper submenu structures are safe to emit whenever the web UI wants them — no native change needed to carry extra fields.
 
 ## Key implementation details in index.html
 

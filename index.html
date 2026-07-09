@@ -508,7 +508,8 @@
       exclusive,            // true: one selection per cluster; false: independent
       transient,            // true: a pop-up submenu — not built at page load and
                             // its selection is discarded, but its position persists
-      markerOverride: null, // when set, buttons inject {marker, modifier} events
+      markerOverride: null, // submenu root marker; ordinary clusters leave null
+      modifierPath: [],      // submenu ancestor labels already chosen
       selected: null,       // last-selected button (only meaningful when exclusive)
       pointers: new Map(), // pointerId -> {x, y}
       mode: null,          // null (pending) | 'drag' | 'pinch'
@@ -556,16 +557,25 @@
     state.el.classList.toggle('horizontal', horizontal);
   }
 
+  function buttonLabel(btn) {
+    return btn.querySelector('.label')?.textContent ?? btn.textContent;
+  }
+
   // Record an interaction on the active study's timeline. The marker is the
   // button's label text; `status`, when given, tags how the (de)selection
   // happened. Best-effort and a no-op off-device.
   function injectEvent(state, btn, status) {
-    const label = btn.querySelector('.label')?.textContent ?? btn.textContent;
-    // A submenu cluster fixes the marker to its host button's label and reports
-    // its own button as a `modifier`; ordinary clusters use the button as marker.
-    const evt = state.markerOverride
-      ? { marker: state.markerOverride, modifier: label }
-      : { marker: label };
+    const label = buttonLabel(btn);
+    // A submenu cluster fixes the marker to its root host and reports the
+    // selected path as modifier, modifier2, modifier3... Ordinary clusters use
+    // the button as marker.
+    const evt = state.markerOverride ? { marker: state.markerOverride } : { marker: label };
+    if (state.markerOverride) {
+      const path = [...state.modifierPath, label];
+      path.forEach((part, i) => {
+        evt[i === 0 ? 'modifier' : `modifier${i + 1}`] = part;
+      });
+    }
     if (status) evt.status = status;
     window.MvrOverlay?.injectTimelineEvent(JSON.stringify(evt));
   }
@@ -577,7 +587,10 @@
     // non-exclusive clusters let each button toggle independently. Selection only
     // scales the label text, so the button box and cluster layout don't change.
     if (state.exclusive && state.selected && state.selected !== btn) {
-      state.selected.classList.remove('selected');
+      const previous = state.selected;
+      previous.classList.remove('selected');
+      const previousHost = submenuHosts.get(previous);
+      if (previousHost?.submenu) closeSubmenu(previousHost);
     }
     btn.classList.add('selected');
     state.selected = btn;
@@ -898,29 +911,52 @@
 
   // --- Modifier submenus ---------------------------------------------------
   // A host button can pop open an exclusive submenu of modifiers on long-press.
-  // Its buttons inject {marker:<host>, modifier:<label>, status?} rather than
-  // their own label as the marker. Each submenu is transient: created on open,
-  // and destroyed (its selection discarded) as soon as the host is deselected.
-  // It reuses createCluster, so it drags/pinches and calls reportInteractive()
-  // like any other cluster. Hosts are registered from the config's `submenus`
-  // map (host label -> modifier labels) in buildFromConfig(), keyed to the
-  // button (in whichever built cluster holds it) whose label matches the key.
+  // Nested submenu hosts use the same config map: if any newly-created submenu
+  // contains a button whose label is a key in `submenus`, that button becomes a
+  // host too. Events keep the root marker fixed and report the selected path as
+  // modifier, modifier2, modifier3...
   const submenuHosts = new Map();
+  const submenuSpecs = new Map();
 
-  // Register a host: find the button across all built clusters whose label
-  // matches `label`, then map it to a config carrying its live submenu (null
-  // when closed) and the cluster that owns it (used to anchor submenu spawn
-  // placement). `id` is the submenu's stable layout-persistence key — deriving
-  // it from the label keeps saved positions stable across reloads.
-  function registerSubmenu(builtClusters, label, modifiers, openOnTap) {
-    for (const cl of builtClusters) {
-      const btn = [...cl.el.querySelectorAll('button')]
-        .find((b) => b.textContent.trim() === label);
-      if (btn) {
-        const id = label.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '-modifier';
-        submenuHosts.set(btn, { marker: label, id, modifiers, openOnTap: !!openOnTap, submenu: null, cluster: cl });
-        return;
-      }
+  function submenuSpecFromConfig(spec) {
+    const modifiers = Array.isArray(spec) ? spec : (Array.isArray(spec?.modifiers) ? spec.modifiers : []);
+    return {
+      modifiers,
+      openOnTap: !Array.isArray(spec) && spec?.openOnTap === true,
+    };
+  }
+
+  function slug(value) {
+    return String(value).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'submenu';
+  }
+
+  function submenuId(marker, modifierPath) {
+    return `${[marker, ...modifierPath].map(slug).join('-')}-modifier`;
+  }
+
+  // Register every matching button in a cluster as a submenu host. Top-level
+  // hosts start a marker (`Injection` -> modifier). Hosts inside a submenu
+  // extend that submenu's event path (`Injection` -> `Hemostasis` -> modifier2).
+  function registerSubmenuHostsForCluster(state) {
+    for (const btn of state.el.querySelectorAll('button')) {
+      const label = buttonLabel(btn).trim();
+      const spec = submenuSpecs.get(label);
+      if (!spec) continue;
+
+      const marker = state.markerOverride || label;
+      const modifierPath = state.markerOverride ? [...state.modifierPath, label] : [];
+      // Avoid endless cycles when menu labels refer back to an ancestor.
+      if (state.markerOverride && [state.markerOverride, ...state.modifierPath].includes(label)) continue;
+
+      submenuHosts.set(btn, {
+        marker,
+        modifierPath,
+        id: submenuId(marker, modifierPath),
+        modifiers: spec.modifiers,
+        openOnTap: spec.openOnTap,
+        submenu: null,
+        cluster: state,
+      });
     }
   }
 
@@ -959,12 +995,14 @@
     // Each key in `submenus` is a host button's label. The value is either the
     // modifier array directly, or an object { modifiers: [...], openOnTap: bool }
     // — openOnTap makes the submenu pop on a plain short tap, not just a
-    // long-press. The bare-array form keeps openOnTap off.
+    // long-press. The bare-array form keeps openOnTap off. The same map is used
+    // for nested popups: submenu buttons are registered as hosts when their
+    // transient cluster is created.
+    submenuSpecs.clear();
     for (const [label, spec] of Object.entries(config.submenus || {})) {
-      const modifiers = Array.isArray(spec) ? spec : (spec.modifiers || []);
-      const openOnTap = !Array.isArray(spec) && spec.openOnTap === true;
-      registerSubmenu(built, label, modifiers, openOnTap);
+      submenuSpecs.set(label, submenuSpecFromConfig(spec));
     }
+    built.forEach(registerSubmenuHostsForCluster);
 
     // Build the vision-AI class-indicator cluster (if configured). It defaults to
     // a horizontal "line of squares" near the top; drag/pinch/dock/persist reuse
@@ -1071,7 +1109,9 @@
     if (host.submenu) return; // already open
     const sub = createCluster(host.id, host.modifiers, 0, 0, true, true);
     sub.markerOverride = host.marker;
+    sub.modifierPath = [...host.modifierPath];
     host.submenu = sub;
+    registerSubmenuHostsForCluster(sub);
     // Reopen at the saved spot when we have one and it's still clear; otherwise
     // find open space beside the host. Persist the chosen spot either way so it
     // is remembered next time.
@@ -1086,9 +1126,15 @@
 
   function closeSubmenu(host) {
     if (!host.submenu) return;
-    const i = clusters.indexOf(host.submenu);
+    const sub = host.submenu;
+    for (const btn of sub.el.querySelectorAll('button')) {
+      const childHost = submenuHosts.get(btn);
+      if (childHost?.submenu) closeSubmenu(childHost);
+      submenuHosts.delete(btn);
+    }
+    const i = clusters.indexOf(sub);
     if (i !== -1) clusters.splice(i, 1);
-    host.submenu.el.remove();
+    sub.el.remove();
     host.submenu = null;
   }
 

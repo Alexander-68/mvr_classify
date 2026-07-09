@@ -44,10 +44,16 @@ A plain button injects its label as `marker`:
 { "marker": "R.Colon" }
 ```
 
-A submenu button fixes the `marker` to its **host** and reports the pressed modifier separately:
+A submenu button fixes the `marker` to its root **host** and reports the pressed modifier separately:
 
 ```json
 { "marker": "Polyp", "modifier": "EMR" }
+```
+
+Nested submenus keep the same root marker and add numbered modifier fields:
+
+```json
+{ "marker": "Injection", "modifier": "Hemostasis", "modifier2": "Hemoclip" }
 ```
 
 And the press *style* tags a `status`, so one button expresses both an instant mark and a start/stop span:
@@ -59,7 +65,7 @@ And the press *style* tags a `status`, so one button expresses both an instant m
 | long-press, select              | `{ "marker": "Withdrawal", "status": "on" }`    | span begins      |
 | long-press on a selected button | `{ "marker": "Withdrawal", "status": "off" }`   | span ends        |
 
-`status: "on"` / `"off"` bracket a duration (withdrawal running, a therapy in progress); the bare / `finish` pair marks a moment. The payload is open-ended — the recorder stores whatever JSON arrives — so richer structures (a `submodifier`, a `path: [...]` for deeper menus) need no device change.
+`status: "on"` / `"off"` bracket a duration (withdrawal running, a therapy in progress); the bare / `finish` pair marks a moment. The payload is open-ended — the recorder stores whatever JSON arrives — so deeper menu fields such as `modifier2` and `modifier3` need no device change.
 
 ## Why it matters
 
