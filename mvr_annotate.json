@@ -8,14 +8,15 @@
     {
       "id": "actions",
       "exclusive": false,
-      "buttons": ["Withdrawal", "Injection", "Hemostasis", "Biopsy", "Polyp"]
+      "buttons": ["Status", "Withdrawal", "Injection", "Hemostasis", "Biopsy", "Polyp"]
     }
   ],
   "submenus": {
-    "Injection": ["Lift", "Hemostasis", "Botox", "Steroid", "Tattoo", "Contrast"],
-    "Hemostasis": ["Hemoclip", "Thermal", "APC", "Injection", "Band", "Topical", "Surgical"],
-    "Biopsy": ["Forceps", "FNA/FNB", "Brush", "Snare", "Suction"],
-    "Polyp": ["Forceps", "Cold Snare", "Hot Snare", "EMR", "ESD", "EFTR", "APC/Ablation", "Surgical"]
+    "Injection":  { "openOnTap": false, "modifiers": ["Lift", "Hemostasis", "Botox", "Steroid", "Tattoo", "Contrast"] },
+    "Hemostasis": { "openOnTap": false, "modifiers": ["Hemoclip", "Thermal", "APC", "Injection", "Band", "Topical", "Surgical"] },
+    "Biopsy":     { "openOnTap": false, "modifiers": ["Forceps", "FNA/FNB", "Brush", "Snare", "Suction"] },
+    "Polyp":      { "openOnTap": false, "modifiers": ["Forceps", "Cold Snare", "Hot Snare", "EMR", "ESD", "EFTR", "APC/Ablation", "Partially Resected", "Fully Resected", "Surgical"] },
+    "Status":     { "openOnTap": true, "modifiers": ["Normal", "Ulcerative Colitis", "Infectious Colitis", "Ischemic Colitis", "Crohn's", "Diverticulosis", "Diverticulitis", "Hemorrhoids"] }
   },
   "aiScope": {
     "id": "ai_classes",

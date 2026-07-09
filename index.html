@@ -865,6 +865,10 @@
               closeSubmenu(host);
             } else {
               selectButton(state, btn, undefined);
+              // openOnTap hosts pop their submenu on a plain short tap too, not
+              // only on long-press. The next short tap hits the selected branch
+              // above, which deselects ('finish') and tears the submenu down.
+              if (host.openOnTap) openSubmenu(host);
             }
           } else if (btn.classList.contains('selected')) {
             unselectButton(state, btn, 'finish');
@@ -908,13 +912,13 @@
   // when closed) and the cluster that owns it (used to anchor submenu spawn
   // placement). `id` is the submenu's stable layout-persistence key — deriving
   // it from the label keeps saved positions stable across reloads.
-  function registerSubmenu(builtClusters, label, modifiers) {
+  function registerSubmenu(builtClusters, label, modifiers, openOnTap) {
     for (const cl of builtClusters) {
       const btn = [...cl.el.querySelectorAll('button')]
         .find((b) => b.textContent.trim() === label);
       if (btn) {
         const id = label.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '-modifier';
-        submenuHosts.set(btn, { marker: label, id, modifiers, submenu: null, cluster: cl });
+        submenuHosts.set(btn, { marker: label, id, modifiers, openOnTap: !!openOnTap, submenu: null, cluster: cl });
         return;
       }
     }
@@ -952,9 +956,14 @@
       markHome(c);
     }
 
-    // Each key in `submenus` is a host button's label; the value is its modifiers.
-    for (const [label, modifiers] of Object.entries(config.submenus || {})) {
-      registerSubmenu(built, label, modifiers);
+    // Each key in `submenus` is a host button's label. The value is either the
+    // modifier array directly, or an object { modifiers: [...], openOnTap: bool }
+    // — openOnTap makes the submenu pop on a plain short tap, not just a
+    // long-press. The bare-array form keeps openOnTap off.
+    for (const [label, spec] of Object.entries(config.submenus || {})) {
+      const modifiers = Array.isArray(spec) ? spec : (spec.modifiers || []);
+      const openOnTap = !Array.isArray(spec) && spec.openOnTap === true;
+      registerSubmenu(built, label, modifiers, openOnTap);
     }
 
     // Build the vision-AI class-indicator cluster (if configured). It defaults to
