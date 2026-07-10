@@ -218,6 +218,15 @@
     font-weight: 700;
     line-height: 1.1;
   }
+  /* "REC" badge on the accumulator line: shown only while a video is recording,
+     signalling that .ind-acc is now the per-video accumulator (not per-study). */
+  .cluster .indicator .ind-rec {
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1.1;
+    color: #ff4d4d;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+  }
 
   /* Vertical stack (default): share the top/bottom edge like the buttons do. */
   .cluster .indicator:not(:first-child) {
@@ -1015,24 +1024,34 @@
       const acc = document.createElement('span');
       acc.className = 'ind-acc';
       acc.textContent = '–';
+      // "REC" badge next to the accumulator, shown only while a video records
+      // (it then reads the per-video accumulator instead of the per-study one).
+      const rec = document.createElement('span');
+      rec.className = 'ind-rec';
+      rec.textContent = 'REC';
+      rec.style.display = 'none';
       // 3rd line: the live real-time percent (smaller, sits below the accumulator).
       const pct = document.createElement('span');
       pct.className = 'ind-pct';
       pct.textContent = '–';
       cell.appendChild(label);
       cell.appendChild(acc);
+      cell.appendChild(rec);
       cell.appendChild(pct);
       el.appendChild(cell);
       // buf/sum: ring buffer of the last N raw percents for the moving average.
       // ma: the latest moving-averaged percent (null until the first packet),
       // read by the history graph when it collects a time sample.
-      // accSum/accCount/accDisp: the running above-threshold accumulator — sum of
-      // each raw sample's overshoot past the threshold, its sample count, and the
-      // last shown integer percent.
-      indicators.push({ cls: it.cls, el: cell, pctEl: pct, accEl: acc,
+      // accSum/accCount: the per-STUDY above-threshold accumulator — sum of each
+      // raw sample's overshoot past the threshold and its sample count.
+      // vAccSum/vAccCount: the per-VIDEO accumulator, same math but scoped to the
+      // current recording (reset on rec_start, kept across pause/resume). accShown
+      // is the last text painted into accEl (either source, see renderAcc).
+      indicators.push({ cls: it.cls, el: cell, pctEl: pct, accEl: acc, recEl: rec,
         threshold: clamp(typeof it.threshold === 'number' ? it.threshold : 50, 0, 99),
         disp: null, ma: null, buf: [], sum: 0,
-        accSum: 0, accCount: 0, accDisp: null });
+        accSum: 0, accCount: 0,
+        vAccSum: 0, vAccCount: 0, accShown: null });
     }
     const state = initCluster(id, el, left, top, false, false);
     state.indicators = indicators;
@@ -2057,6 +2076,13 @@
   // stream updates both.
   let aiCluster = null;
   let aiGraph = null;
+  // True while a video is actively recording (between rec_start/rec_resume and the
+  // next rec_pause/rec_stop). Gates per-video accumulation and swaps the .ind-acc
+  // readout from per-study to per-video (see handleRecordingAcc / renderAcc).
+  let recordingActive = false;
+  // Latest AI model name seen on the inference stream (payload.model); stamped
+  // onto the per-video summary event.
+  let aiModel = null;
 
   // Fail-loud banner shown when the config can't be loaded. The file is the sole
   // source of menu content, so on failure we say why rather than come up blank.
@@ -2235,6 +2261,26 @@
     }, AI_IDLE_HIDE_MS);
   }
 
+  // Above-threshold accumulator percent for one source: accumulated overshoot
+  // over the accumulated headroom, rounded; null when nothing has accumulated.
+  function accPercent(sum, count, thr) {
+    if (!count) return null;
+    return Math.round(sum / (count * (100 - thr)) * 100);
+  }
+
+  // Paint .ind-acc from whichever accumulator is active: per-video while a video
+  // records, otherwise per-study. Repaints only on a change to avoid churn.
+  function renderAcc(ind) {
+    const pct = recordingActive
+      ? accPercent(ind.vAccSum, ind.vAccCount, ind.threshold)
+      : accPercent(ind.accSum, ind.accCount, ind.threshold);
+    const txt = pct === null ? '–' : `${pct}%`;
+    if (ind.accShown !== txt) {
+      ind.accShown = txt;
+      ind.accEl.textContent = txt;
+    }
+  }
+
   // Hysteresis for the displayed integer percent: keep showing the current value
   // until the true value moves at least this far from it, so a score dithering
   // around a rounding boundary (e.g. 45.5%) doesn't flicker between two integers.
@@ -2244,6 +2290,7 @@
 
   function updateAiIndicators(payload) {
     if (!aiCluster) return;
+    if (typeof payload.model === 'string') aiModel = payload.model; // stamp on summaries
     const byCls = new Map();
     for (const d of (payload.det || [])) byCls.set(d.cls, d.scr);
     for (const ind of aiCluster.indicators) {
@@ -2257,14 +2304,15 @@
       // headroom — e.g. thr 55, samples 60 then 70 -> (5)/(45) = 11%, then
       // (5+15)/(45*2) = 22%. Accumulates for the whole session.
       const thr = ind.threshold;
-      ind.accSum += Math.max(0, raw - thr);
+      const over = Math.max(0, raw - thr);
+      ind.accSum += over;
       ind.accCount += 1;
-      const accPct = ind.accSum / (ind.accCount * (100 - thr)) * 100;
-      const accRounded = Math.round(accPct);
-      if (ind.accDisp !== accRounded) {
-        ind.accDisp = accRounded;
-        ind.accEl.textContent = `${accRounded}%`;
+      // Per-video accumulator advances only while a video is recording.
+      if (recordingActive) {
+        ind.vAccSum += over;
+        ind.vAccCount += 1;
       }
+      renderAcc(ind);
       // Moving average over the last maSize raw percents (float). Push newest,
       // evict oldest once the window is full; keep a running sum to average in O(1).
       ind.buf.push(raw);
@@ -2319,6 +2367,60 @@
     'rec_start', 'rec_pause', 'rec_resume', 'rec_stop', 'rec_error', 'snapshot',
   ]);
 
+  // Flip recording state: toggle the REC badges and re-render each .ind-acc from
+  // the now-active accumulator (per-video while recording, per-study otherwise).
+  function setRecording(active) {
+    recordingActive = active;
+    if (!aiCluster) return;
+    for (const ind of aiCluster.indicators) {
+      ind.recEl.style.display = active ? '' : 'none';
+      renderAcc(ind);
+    }
+  }
+
+  // Zero the per-video accumulators (on rec_start, and after a rec_stop inject).
+  function resetVideoAcc() {
+    if (!aiCluster) return;
+    for (const ind of aiCluster.indicators) { ind.vAccSum = 0; ind.vAccCount = 0; }
+  }
+
+  // Emit a timeline event carrying each class's per-video above-threshold result
+  // (fired on rec_pause and rec_stop, before the display reverts to per-study).
+  function injectVideoAccEvent() {
+    if (!aiCluster) return;
+    const classes = aiCluster.indicators.map((ind) => ({
+      cls: ind.cls,
+      pct: accPercent(ind.vAccSum, ind.vAccCount, ind.threshold) || 0,
+    }));
+    const evt = { marker: 'aiScope', event: 'video_summary', classes };
+    if (aiModel) evt.model = aiModel;
+    window.MvrOverlay?.injectTimelineEvent(JSON.stringify(evt));
+  }
+
+  // Drive the per-video accumulator's lifecycle off the recording events. Pause
+  // and stop both inject the per-video summary and revert the display; only stop
+  // resets the accumulator (pause keeps it so resume continues it).
+  function handleRecordingAcc(evName) {
+    switch (evName) {
+      case 'rec_start':
+        resetVideoAcc();
+        setRecording(true);
+        break;
+      case 'rec_resume':
+        setRecording(true);
+        break;
+      case 'rec_pause':
+        if (recordingActive) injectVideoAccEvent();
+        setRecording(false);
+        break;
+      case 'rec_stop':
+        if (recordingActive) injectVideoAccEvent();
+        setRecording(false);
+        resetVideoAcc();
+        break;
+    }
+  }
+
   function handleStudyEvent(ev) {
     if (!ev || typeof ev.ev !== 'string') return;
     // A new study invalidates the prior study's collected events. (The connect
@@ -2326,11 +2428,14 @@
     // keeps the buffer scoped to the current study.)
     if (ev.ev === 'study_start') {
       recordingEvents.length = 0;
+      setRecording(false);
+      resetVideoAcc();
       if (aiGraph) drawGraph(aiGraph); // clear any spans from the previous study
       return;
     }
     if (RECORDING_EVENT_NAMES.has(ev.ev)) {
       recordingEvents.push(ev);         // keep the raw event; `ts` is its timebase
+      handleRecordingAcc(ev.ev);        // advance the per-video accumulator state
       if (aiGraph) drawGraph(aiGraph);  // reflect the new span/tick immediately
     }
   }

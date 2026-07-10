@@ -67,6 +67,16 @@ And the press *style* tags a `status`, so one button expresses both an instant m
 
 `status: "on"` / `"off"` bracket a duration (withdrawal running, a therapy in progress); the bare / `finish` pair marks a moment. The payload is open-ended — the recorder stores whatever JSON arrives — so deeper menu fields such as `modifier2` and `modifier3` need no device change.
 
+Not every external marker comes from a finger. When the optional **aiScope** vision-AI indicators are configured, the overlay also emits markers on its own. aiScope reads the device's live per-class inference scores and keeps a running "above-threshold" accumulator per class; while a video records it runs a per-video accumulator, and when that video pauses or stops it injects one summary marker with the per-class results and the model that produced them:
+
+```json
+{ "marker": "aiScope", "event": "video_summary",
+  "classes": [{ "cls": 0, "pct": 42 }, { "cls": 1, "pct": 7 }],
+  "model": "colon-detect-v3" }
+```
+
+The device recording events (`rec_start` / `rec_pause` / `rec_resume` / `rec_stop`) drive that lifecycle, so the AI summary lands on the same timeline and clock as the clip it describes — one more marker, no extra device work.
+
 ## Why it matters
 
 Three payoffs for the MVR / MTR line, all falling out of one annotated timeline.
