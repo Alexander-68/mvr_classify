@@ -204,8 +204,17 @@
     font-weight: 700;
     line-height: 1.1;
   }
-  .cluster .indicator .ind-pct {
+  /* 2nd line: the running "above-threshold" accumulator (0..100%). The prominent
+     readout now. */
+  .cluster .indicator .ind-acc {
     font-size: 22px;
+    font-weight: 700;
+    line-height: 1.1;
+  }
+  /* 3rd line: the live real-time percent, half the size, sitting below the
+     accumulator. */
+  .cluster .indicator .ind-pct {
+    font-size: 11px;
     font-weight: 700;
     line-height: 1.1;
   }
@@ -1002,16 +1011,28 @@
       const label = document.createElement('span');
       label.className = 'ind-label';
       label.textContent = it.label;
+      // 2nd line: running "above-threshold" accumulator (see updateAiIndicators).
+      const acc = document.createElement('span');
+      acc.className = 'ind-acc';
+      acc.textContent = '–';
+      // 3rd line: the live real-time percent (smaller, sits below the accumulator).
       const pct = document.createElement('span');
       pct.className = 'ind-pct';
       pct.textContent = '–';
       cell.appendChild(label);
+      cell.appendChild(acc);
       cell.appendChild(pct);
       el.appendChild(cell);
       // buf/sum: ring buffer of the last N raw percents for the moving average.
       // ma: the latest moving-averaged percent (null until the first packet),
       // read by the history graph when it collects a time sample.
-      indicators.push({ cls: it.cls, el: cell, pctEl: pct, disp: null, ma: null, buf: [], sum: 0 });
+      // accSum/accCount/accDisp: the running above-threshold accumulator — sum of
+      // each raw sample's overshoot past the threshold, its sample count, and the
+      // last shown integer percent.
+      indicators.push({ cls: it.cls, el: cell, pctEl: pct, accEl: acc,
+        threshold: clamp(typeof it.threshold === 'number' ? it.threshold : 50, 0, 99),
+        disp: null, ma: null, buf: [], sum: 0,
+        accSum: 0, accCount: 0, accDisp: null });
     }
     const state = initCluster(id, el, left, top, false, false);
     state.indicators = indicators;
@@ -1062,11 +1083,26 @@
     box.appendChild(resizeHandle);
     el.appendChild(box);
 
+    // Threshold reference lines, one per DISTINCT per-class threshold value. When
+    // several classes share a value, the single line takes the color of the
+    // "higher" class — the lowest cls id among them. Sorted by value for a stable
+    // draw order.
+    const thrByValue = new Map();
+    classes.forEach((c) => {
+      if (typeof c.threshold !== 'number') return;
+      const prev = thrByValue.get(c.threshold);
+      if (!prev || c.cls < prev.cls) thrByValue.set(c.threshold, { cls: c.cls, color: c.color });
+    });
+    const thresholds = [...thrByValue.entries()]
+      .map(([value, o]) => ({ value, color: o.color }))
+      .sort((a, b) => a.value - b.value);
+
     const state = initCluster(id, el, left, top, false, false);
     state.graph = {
       canvas: cvs,
       ctx: cvs.getContext('2d'),
       classes: classes.map((c) => ({ cls: c.cls, color: c.color })),
+      thresholds,            // [{ value, color }] deduped reference lines (see above)
       samples: [],           // [{ t, v: [pct|null, ...] }] newest last; v aligned to classes.
                              // In-memory only — never persisted (only layout is saved).
       maxSamples: opts.maxSamples, // in-memory retention cap (config: aiScope.graph.maxSamples)
@@ -1076,8 +1112,6 @@
       baseW,                 // strip width in CSS px (drag the right edge to change)
       cw: baseW, ch: opts.height, // measured canvas CSS size (set by sizeGraphCanvas)
       msPerPx: 1,            // ms of history per horizontal pixel (timeline zoom); set below
-      threshold: opts.threshold,        // horizontal reference line at this percent, or null
-      thresholdColor: opts.thresholdColor,
       // Recording-event overlay colors (config aiScope.graph.*Color). Each is a
       // CSS color string or null; a null color means that element isn't drawn.
       recordingFillColor: opts.recordingFillColor, // shaded recording band
@@ -1120,7 +1154,8 @@
 
   // Redraw the graph from its samples: X = time across the last windowMs (newest
   // sample pinned to the right edge), Y = 0..100% bottom-to-top, one polyline per
-  // class in its own color, plus an optional dashed threshold line. null values (a
+  // class in its own color, plus a dashed threshold line per distinct per-class
+  // threshold value (colored by its owning class). null values (a
   // class absent from a packet before it ever reported) break the line into
   // segments. Samples older than the window are kept in memory (so a wider strip
   // or a zoomed-out timeline reveals more real history) but skipped when drawing.
@@ -1134,17 +1169,20 @@
     const x0 = pad, x1 = W - pad, y0 = pad, y1 = H - pad;
     const yOf = (v) => y1 - (y1 - y0) * (clamp(v, 0, 100) / 100);
 
-    // Threshold reference line (drawn under the class curves).
-    if (g.threshold != null) {
+    // Threshold reference lines (drawn under the class curves), one per distinct
+    // per-class threshold value, each in its owning class's color.
+    if (g.thresholds && g.thresholds.length) {
       ctx.save();
-      ctx.strokeStyle = g.thresholdColor;
       ctx.lineWidth = 1;
       ctx.setLineDash([4, 4]);
-      const y = yOf(g.threshold);
-      ctx.beginPath();
-      ctx.moveTo(x0, y);
-      ctx.lineTo(x1, y);
-      ctx.stroke();
+      for (const thr of g.thresholds) {
+        ctx.strokeStyle = thr.color;
+        const y = yOf(thr.value);
+        ctx.beginPath();
+        ctx.moveTo(x0, y);
+        ctx.lineTo(x1, y);
+        ctx.stroke();
+      }
       ctx.restore();
     }
 
@@ -1947,6 +1985,13 @@
     // live scores into it.
     if (config.aiScope && (config.aiScope.classes || []).length) {
       const ai = config.aiScope;
+      // Per-class above-threshold value (percent), clamped [0, 99] so the
+      // (100 - thr) headroom denominator is never zero. Default 50 when a class
+      // omits `threshold`. Both the indicator accumulator and the graph's
+      // reference lines read this off each class.
+      ai.classes.forEach((c) => {
+        c.threshold = clamp(typeof c.threshold === 'number' ? c.threshold : 50, 0, 99);
+      });
       aiCluster = createReadoutCluster(
         ai.id || 'ai_classes', ai.classes,
         typeof ai.left === 'number' ? ai.left : 40,
@@ -1987,12 +2032,7 @@
             // yields ~5 stored points/s.
             downsample: typeof g.downsample === 'number' && g.downsample > 0
               ? Math.round(g.downsample) : 1,
-            // Threshold reference line: a percent to draw a dashed line at
-            // (default 50); null/false disables it. thresholdColor is optional.
-            threshold: (g.threshold === null || g.threshold === false) ? null
-              : (typeof g.threshold === 'number' ? g.threshold : 50),
-            thresholdColor: typeof g.thresholdColor === 'string'
-              ? g.thresholdColor : 'rgba(255, 255, 255, 0.4)',
+            // Threshold reference lines are derived per-class (see createGraphCluster).
             // Recording-event overlay colors: only what's set in config is drawn.
             // Omit a color to hide that element (band / edges / snapshot ticks).
             recordingFillColor: typeof g.recordingFillColor === 'string' ? g.recordingFillColor : null,
@@ -2211,6 +2251,20 @@
       // Only classes present in this packet update; others keep their last value.
       if (typeof scr !== 'number') continue;
       const raw = clamp(scr, 0, 1) * 100;
+      // Above-threshold accumulator: each raw sample contributes its overshoot
+      // past the threshold (clamped at 0), out of the (100 - threshold) headroom.
+      // The running percent is the accumulated overshoot over the accumulated
+      // headroom — e.g. thr 55, samples 60 then 70 -> (5)/(45) = 11%, then
+      // (5+15)/(45*2) = 22%. Accumulates for the whole session.
+      const thr = ind.threshold;
+      ind.accSum += Math.max(0, raw - thr);
+      ind.accCount += 1;
+      const accPct = ind.accSum / (ind.accCount * (100 - thr)) * 100;
+      const accRounded = Math.round(accPct);
+      if (ind.accDisp !== accRounded) {
+        ind.accDisp = accRounded;
+        ind.accEl.textContent = `${accRounded}%`;
+      }
       // Moving average over the last maSize raw percents (float). Push newest,
       // evict oldest once the window is full; keep a running sum to average in O(1).
       ind.buf.push(raw);

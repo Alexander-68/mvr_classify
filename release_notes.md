@@ -3,6 +3,7 @@
 ## 2026-07-10
 1. Recording-inactive warning is now per-cluster. Add "recordingWarning": false to a cluster in mvr_annotate.json to stop its buttons (and their submenus) from raising the warning. Defaults to true, so existing clusters are unchanged. Example: the "Data" cluster is opted out.
 2. aiScope graph "downsample" option (under "aiScope": { "graph": {...} }): averages every N incoming samples into one stored point (timestamped at the latest of the group), keeping the history coarser. aiScope feeds ~60 samples/s, so downsample: 12 stores ~5/s. Defaults to 1 (keep every sample, unchanged).
+3. aiScope indicators now show a second line: a per-class "above-threshold" accumulator (0..100%). Each sample adds its overshoot past the class threshold over the (100 - threshold) headroom, averaged over all samples (e.g. threshold 55, scores 60 then 70 -> 11% then 22%). The live real-time % moves to a smaller third line. Thresholds are now per-class ("threshold" under each aiScope class, default 50) instead of a single graph threshold; the graph draws one dashed line per distinct threshold value, colored by its class (lowest cls id wins when values tie).
 
 ## 2026-07-09-2
 1. Add recording inactive warning. Activated when user annotates without start video recording. Requires MVR FW 260709+.
