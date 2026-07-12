@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
 <title>Toggle Button Test</title>
-<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="icon" type="image/png" href="fv.png">
 <style>
   * {
     box-sizing: border-box;
@@ -218,39 +218,53 @@
     font-weight: 700;
     line-height: 1.1;
   }
-  /* "REC" badge on the accumulator line: shown only while a video is recording,
-     signalling that .ind-acc is now the per-video accumulator (not per-study). */
-  .cluster .indicator .ind-rec {
+  /* A single "REC" chip pinned on the shared border between the first two class
+     indicators while a video is recording. It signals that .ind-acc is now the
+     per-video accumulator (not per-study). Positioned by positionRecBadge() and
+     centered on the boundary point via translate(-50%, -50%). */
+  .cluster .ind-rec {
+    position: absolute;
+    z-index: 3;
+    transform: translate(-50%, -50%);
+    padding: 0 3px;
+    border-radius: 3px;
+    background: rgba(0, 0, 0, 0.72);
+    font-family: system-ui, sans-serif;
     font-size: 10px;
     font-weight: 700;
-    line-height: 1.1;
-    color: #ff4d4d;
+    line-height: 1.35;
+    letter-spacing: 0.5px;
+    color: #42a8d8;
     text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+    pointer-events: none;
   }
 
-  /* Vertical stack (default): share the top/bottom edge like the buttons do. */
-  .cluster .indicator:not(:first-child) {
+  /* Vertical stack (default): share the top/bottom edge like the buttons do.
+     Use :first/last-of-type (not -child) so the absolutely-positioned .ind-rec
+     span appended to the cluster doesn't steal the "last" slot from the final
+     indicator and rob it of its rounded bottom corners. */
+  .cluster .indicator:not(:first-of-type) {
     margin-top: -2px;
   }
-  .cluster .indicator:first-child {
+  .cluster .indicator:first-of-type {
     border-top-left-radius: 10px;
     border-top-right-radius: 10px;
   }
-  .cluster .indicator:last-child {
+  .cluster .indicator:last-of-type {
     border-bottom-left-radius: 10px;
     border-bottom-right-radius: 10px;
   }
   /* Horizontal row: shared edge and rounded corners move to the X axis. */
-  .cluster.horizontal .indicator:not(:first-child) {
+  .cluster.horizontal .indicator:not(:first-of-type) {
     margin-top: 0;
     margin-left: -2px;
   }
-  .cluster.horizontal .indicator:first-child {
+  .cluster.horizontal .indicator:first-of-type {
     border-radius: 0;
     border-top-left-radius: 10px;
     border-bottom-left-radius: 10px;
   }
-  .cluster.horizontal .indicator:last-child {
+  .cluster.horizontal .indicator:last-of-type {
     border-radius: 0;
     border-top-right-radius: 10px;
     border-bottom-right-radius: 10px;
@@ -1024,19 +1038,12 @@
       const acc = document.createElement('span');
       acc.className = 'ind-acc';
       acc.textContent = '–';
-      // "REC" badge next to the accumulator, shown only while a video records
-      // (it then reads the per-video accumulator instead of the per-study one).
-      const rec = document.createElement('span');
-      rec.className = 'ind-rec';
-      rec.textContent = 'REC';
-      rec.style.display = 'none';
       // 3rd line: the live real-time percent (smaller, sits below the accumulator).
       const pct = document.createElement('span');
       pct.className = 'ind-pct';
       pct.textContent = '–';
       cell.appendChild(label);
       cell.appendChild(acc);
-      cell.appendChild(rec);
       cell.appendChild(pct);
       el.appendChild(cell);
       // buf/sum: ring buffer of the last N raw percents for the moving average.
@@ -1047,14 +1054,22 @@
       // vAccSum/vAccCount: the per-VIDEO accumulator, same math but scoped to the
       // current recording (reset on rec_start, kept across pause/resume). accShown
       // is the last text painted into accEl (either source, see renderAcc).
-      indicators.push({ cls: it.cls, el: cell, pctEl: pct, accEl: acc, recEl: rec,
+      indicators.push({ cls: it.cls, el: cell, pctEl: pct, accEl: acc,
         threshold: clamp(typeof it.threshold === 'number' ? it.threshold : 50, 0, 99),
         disp: null, ma: null, buf: [], sum: 0,
         accSum: 0, accCount: 0,
         vAccSum: 0, vAccCount: 0, accShown: null });
     }
+    // A single "REC" chip, pinned by positionRecBadge() onto the shared border
+    // between the first two indicators while a video records; hidden otherwise.
+    const rec = document.createElement('span');
+    rec.className = 'ind-rec';
+    rec.textContent = 'REC';
+    rec.style.display = 'none';
+    el.appendChild(rec);
     const state = initCluster(id, el, left, top, false, false);
     state.indicators = indicators;
+    state.recEl = rec;
     return state;
   }
 
@@ -1564,6 +1579,8 @@
     if (state.horizontal === horizontal) return;
     state.horizontal = horizontal;
     state.el.classList.toggle('horizontal', horizontal);
+    // The reflow moved the shared border; re-pin the REC chip if it's showing.
+    if (state.recEl && recordingActive) positionRecBadge(state);
   }
 
   function buttonLabel(btn) {
@@ -2419,15 +2436,32 @@
     'rec_start', 'rec_pause', 'rec_resume', 'rec_stop', 'rec_error', 'snapshot',
   ]);
 
-  // Flip recording state: toggle the REC badges and re-render each .ind-acc from
-  // the now-active accumulator (per-video while recording, per-study otherwise).
+  // Pin the single REC chip onto the shared border between the first two class
+  // indicators (bottom edge when stacked, right edge when a row). No-op unless
+  // there are at least two indicators to sit between.
+  function positionRecBadge(state) {
+    const rec = state.recEl;
+    if (!rec || state.indicators.length < 2) return;
+    const c0 = state.indicators[0].el;
+    if (state.horizontal) {
+      rec.style.left = `${c0.offsetLeft + c0.offsetWidth - 1}px`;
+      rec.style.top = `${c0.offsetTop + c0.offsetHeight / 2}px`;
+    } else {
+      rec.style.left = `${c0.offsetLeft + c0.offsetWidth / 2}px`;
+      rec.style.top = `${c0.offsetTop + c0.offsetHeight - 1}px`;
+    }
+  }
+
+  // Flip recording state: toggle the single REC chip and re-render each .ind-acc
+  // from the now-active accumulator (per-video while recording, per-study else).
   function setRecording(active) {
     recordingActive = active;
     if (!aiCluster) return;
-    for (const ind of aiCluster.indicators) {
-      ind.recEl.style.display = active ? '' : 'none';
-      renderAcc(ind);
+    if (aiCluster.recEl) {
+      aiCluster.recEl.style.display = active ? '' : 'none';
+      if (active) positionRecBadge(aiCluster);
     }
+    for (const ind of aiCluster.indicators) renderAcc(ind);
   }
 
   // Zero the per-video accumulators (on rec_start, and after a rec_stop inject).
