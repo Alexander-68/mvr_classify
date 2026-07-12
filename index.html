@@ -1133,7 +1133,8 @@
       ctx: cvs.getContext('2d'),
       classes: classes.map((c) => ({ cls: c.cls, color: c.color })),
       thresholds,            // [{ value, color }] deduped reference lines (see above)
-      samples: [],           // [{ t, v: [pct|null, ...] }] newest last; v aligned to classes.
+      samples: [],           // [{ t, v: [pct|null, ...], frm }] newest last; v aligned to
+                             // classes; frm = source inference frame number (payload.frm).
                              // In-memory only — never persisted (only layout is saved).
       maxSamples: opts.maxSamples, // in-memory retention cap (config: aiScope.graph.maxSamples)
       downsample: opts.downsample, // fold every N incoming samples into 1 averaged
@@ -1381,7 +1382,7 @@
 
   // Average one downsample group into a single sample: per-class mean of the
   // buffered values (nulls skipped; null if every value was null), timestamped
-  // with the latest sample in the group.
+  // (and frame-tagged) with the latest sample in the group.
   function foldSampleGroup(buf) {
     const cols = buf[0].v.length;
     const v = new Array(cols);
@@ -1390,7 +1391,8 @@
       for (const s of buf) { const x = s.v[i]; if (x != null) { sum += x; count++; } }
       v[i] = count ? sum / count : null;
     }
-    return { t: buf[buf.length - 1].t, v };
+    const last = buf[buf.length - 1];
+    return { t: last.t, v, frm: last.frm };
   }
 
   // Append one time sample (the current moving average of every class). Samples
@@ -1399,16 +1401,16 @@
   // reveals history that was collected but not previously shown. Then repaint.
   // With g.downsample > 1, incoming samples are buffered and only every Nth push
   // commits one averaged point (keeps the strip's stored history coarser).
-  function pushGraphSample(state, indicators, t) {
+  function pushGraphSample(state, indicators, t, frm) {
     const g = state.graph;
     const v = indicators.map((ind) => (ind.ma == null ? null : ind.ma));
     if (g.downsample > 1) {
-      g.groupBuf.push({ t, v });
+      g.groupBuf.push({ t, v, frm });
       if (g.groupBuf.length < g.downsample) { drawGraph(state); return; }
       g.samples.push(foldSampleGroup(g.groupBuf));
       g.groupBuf.length = 0;
     } else {
-      g.samples.push({ t, v });
+      g.samples.push({ t, v, frm });
     }
     if (g.samples.length > g.maxSamples) {
       g.samples.splice(0, g.samples.length - g.maxSamples);
@@ -2128,7 +2130,7 @@
   // next rec_pause/rec_stop). Gates per-video accumulation and swaps the .ind-acc
   // readout from per-study to per-video (see handleRecordingAcc / renderAcc).
   let recordingActive = false;
-  // Latest AI model name seen on the inference stream (payload.model); stamped
+  // Latest AI model name seen on the inference stream (payload.mdl); stamped
   // onto the per-video summary event.
   let aiModel = null;
 
@@ -2338,7 +2340,7 @@
 
   function updateAiIndicators(payload) {
     if (!aiCluster) return;
-    if (typeof payload.model === 'string') aiModel = payload.model; // stamp on summaries
+    if (typeof payload.mdl === 'string') aiModel = payload.mdl; // stamp on summaries
     const byCls = new Map();
     for (const d of (payload.det || [])) byCls.set(d.cls, d.scr);
     for (const ind of aiCluster.indicators) {
@@ -2375,8 +2377,10 @@
         ind.pctEl.textContent = `${ind.disp}%`;
       }
     }
-    // Collect one time sample of every class's moving average for the graph.
-    if (aiGraph) pushGraphSample(aiGraph, aiCluster.indicators, performance.now());
+    // Collect one time sample of every class's moving average for the graph,
+    // tagged with the source frame number (payload.frm) so a stored sample can
+    // later be traced back to the exact inference frame.
+    if (aiGraph) pushGraphSample(aiGraph, aiCluster.indicators, performance.now(), payload.frm);
     noteAiActivity(); // data arrived — show the cluster/graph and reset idle timer
   }
 

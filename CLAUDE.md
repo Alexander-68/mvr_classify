@@ -104,6 +104,37 @@ Current content:
 - Polyp submenu (transient, exclusive; long-press Polyp): `Forceps, Cold Snare, Hot Snare, EMR, ESD, EFTR, APC/Ablation, Part.Resected, Fully Resected, Surgical`
 - Status submenu (transient, exclusive; tap or long-press Status): `Normal, Inaccessible, Not Explored, Ulcer.Colitis, Infect.Colitis, Ischem.Colitis, Crohn's, Diverticulosis, Diverticulitis, Hemorrhoids, Cancer/Tumor`
 
+## aiScope data (vision-AI inference stream)
+
+Beyond the hand-driven marker menus, the overlay renders a live **aiScope** panel — a per-class indicator cluster plus a scrolling history graph — fed by the device's on-board vision-AI ("aiScope"). Its appearance/classes come from the `aiScope` block in `mvr_annotate.json`; the data arrives over two independent [Server-Sent Events](https://developer.mozilla.org/docs/Web/API/Server-sent_events) feeds:
+
+- **`/ai/events` — inference stream** (`startAiStream`). One SSE message per inference frame; `e.data` is a JSON object of the current classification result. `updateAiIndicators()` folds each packet into the live indicators, the above-threshold accumulators, and the graph.
+- **`/study/events` — study/recording stream** (see `MVR_homeweb_sse.md`). Recording lifecycle (`rec_start`/`rec_pause`/`rec_resume`/`rec_stop`/`rec_error`), `snapshot` ticks, and study/signal events. Folded into the non-persistent `recordingEvents` buffer and drawn as shaded spans / snapshot ticks over the graph; recording also swaps the accumulator readout from per-study to per-video.
+
+### Inference-packet shape
+
+Each `/ai/events` payload is an open-ended JSON object; only a few fields are consumed today (unknown fields are ignored, so the schema can grow). Example packet from the classification model:
+
+```json
+{"ts_us":47795484118572,"cam":100,"frm":970,"src":[1280,720],"aoi":[0,0,0,0],"mdl":"pd_mobinenetv3l_blur_poor_prep_trained_opset18_fp","det":[{"cls":0,"scr":0.000412},{"cls":1,"scr":0.996790}]}
+```
+
+Fields:
+- `ts_us` — capture timestamp, microseconds.
+- `cam` — camera/source id.
+- `frm` — **frame number**. Stored alongside each graph sample (`pushGraphSample`) so a stored point can later be traced back to its exact inference frame.
+- `src` — source frame size `[w, h]` in pixels.
+- `aoi` — area-of-interest rect `[x, y, w, h]` (all-zero = whole frame).
+- `mdl` — **model name** string. Read as `payload.mdl`, cached in `aiModel`, and stamped onto the per-video summary event.
+- `det` — array of per-class detections `{cls, scr}`: `cls` is the class index (matched against the config `classes[].cls`), `scr` is the 0..1 score. Only classes present in a packet update; others hold their last value.
+
+### What the web side does with it
+
+- **Live indicators** — each class shows its moving-averaged score as a live `0..100%` (window = config `aiScope.movingAverage`).
+- **Above-threshold accumulators** — per class, each sample contributes its overshoot past the class `threshold` out of the `(100 - threshold)` headroom; the running percent is accumulated overshoot / accumulated headroom. Two accumulators run in parallel: a **per-study** one and a **per-video** one that advances only while recording.
+- **History graph** — an in-memory ring of `{ t, v: [pct|null, …], frm }` samples (newest last, `v` aligned to `classes`), capped at `aiScope.graph.maxSamples` and optionally coarsened by `aiScope.graph.downsample`. In-memory only — **never persisted** (only the graph's layout/zoom is saved); reset when a new study begins.
+- **Per-video summary event** — on `rec_pause`/`rec_stop`, `injectVideoAccEvent()` injects `{marker:"aiScope", event:"video_summary", classes:[{cls,pct},…], model?}` (the `model` field carries the cached `mdl` name) onto the timeline.
+
 ## Important: notifying the native Android host
 
 This page is loaded as a transparent overlay on top of native Android UI. **Any interactive element MUST call:**
