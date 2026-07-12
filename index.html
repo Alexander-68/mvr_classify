@@ -2002,10 +2002,17 @@
       // Avoid endless cycles when menu labels refer back to an ancestor.
       if (state.markerOverride && [state.markerOverride, ...state.modifierPath].includes(label)) continue;
 
+      // Top-level hosts that share a definition (via a string reference in the
+      // config) adopt its `sharedId`, so they persist under one key and pop the
+      // submenu at the same place. For a plain inline definition sharedId equals
+      // the path-derived id, so this stays identical to the old behavior. Nested
+      // hosts always key off their own path.
+      const id = (!state.markerOverride && spec.sharedId) || submenuId(marker, modifierPath);
+
       submenuHosts.set(btn, {
         marker,
         modifierPath,
-        id: submenuId(marker, modifierPath),
+        id,
         modifiers: spec.modifiers,
         openOnTap: spec.openOnTap,
         title: label,
@@ -2059,9 +2066,28 @@
     // long-press. The bare-array form keeps openOnTap off. The same map is used
     // for nested popups: submenu buttons are registered as hosts when their
     // transient cluster is created.
+    // A submenu value may be a STRING that names another key in `submenus`; that
+    // host then reuses the referenced definition's modifiers/openOnTap AND its
+    // `sharedId`, so several buttons can share one submenu that pops at the same
+    // place (position/zoom persist under the single id). The target can be a real
+    // button label or a synthetic definition key that isn't a button anywhere.
     submenuSpecs.clear();
-    for (const [label, spec] of Object.entries(config.submenus || {})) {
-      submenuSpecs.set(label, submenuSpecFromConfig(spec));
+    const rawSubmenus = config.submenus || {};
+    const resolveSubmenu = (label, seen = new Set()) => {
+      const raw = rawSubmenus[label];
+      if (typeof raw === 'string') {
+        if (seen.has(label) || !(raw in rawSubmenus)) return null; // cycle / missing target
+        seen.add(label);
+        const target = resolveSubmenu(raw, seen);
+        return target ? { ...target } : null; // adopt content + target's sharedId
+      }
+      const base = submenuSpecFromConfig(raw);
+      base.sharedId = submenuId(label, []); // canonical id for this definition
+      return base;
+    };
+    for (const label of Object.keys(rawSubmenus)) {
+      const resolved = resolveSubmenu(label);
+      if (resolved) submenuSpecs.set(label, resolved);
     }
     built.forEach(registerSubmenuHostsForCluster);
 

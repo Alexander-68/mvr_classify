@@ -5,24 +5,27 @@
   },
   "clusters": [
     {
+      "id": "Data",
+      "exclusive": true,
+      "recordingWarning": false,
+      "buttons": ["Trial Timeframe", "Current Disease", "Open Forceps Size (mm)"]
+    },
+    {
       "id": "Segments",
       "exclusive": true,
       "buttons": ["Illeum", "R.Colon", "Tv.Colon", "L.Colon", "S.Colon", "Rectum"]
-    },
-    {
-      "id": "Actions",
-      "exclusive": false,
-      "buttons": ["Withdrawal", "Injection", "Hemostasis", "Biopsy", "Polyp"]
     }
   ],
-  "aiScope": {
-    "id": "ai_classes",
-    "movingAverage": 12,
-    "graph": { "id": "ai_graph", "windowSeconds": 30, "width": 320, "height": 84, "maxSamples": 216000, "downsample": 3,
-      "recordingFillColor": "rgba(64, 64, 255, 0.16)", "recordingEdgeColor": "rgba(80, 80, 255, 0.9)", "snapshotColor": "rgba(120, 210, 255, 0.9)" },
-    "classes": [
-      { "cls": 0, "label": "Blur", "color": "#ff69b4", "threshold": 50 },
-      { "cls": 1, "label": "PooP", "color": "#8a5a2b", "threshold": 60 }
-    ]
+  "submenus": {
+    "SegmentStatus": { "openOnTap": true, "modifiers": ["Landmarked", "Inaccessible", "Not Explored", "Fully Resected", "Partially Resected"] },
+    "Illeum":     "SegmentStatus",
+    "R.Colon":    "SegmentStatus",
+    "Tv.Colon":   "SegmentStatus",
+    "L.Colon":    "SegmentStatus",
+    "S.Colon":    "SegmentStatus",
+    "Rectum":     "SegmentStatus",
+    "Trial Timeframe": { "openOnTap": true, "modifiers": ["Beginning", "10th week", "20th week", "30th week", "40th week", "52th week" ] },
+    "Open Forceps Size (mm)": { "openOnTap": true, "modifiers": ["4", "5", "6", "7", "8", "9", "10" ] },
+    "Current Disease": { "openOnTap": true, "modifiers": ["Ulcerative Colitis", "Crohn's" ] }
   }
 }

@@ -74,18 +74,30 @@ Shape:
   // listed modifiers. A submenu's persistence key/id is derived from its open
   // path, so renaming a host or ancestor resets that saved submenu position.
   //
-  // A submenu value is EITHER the modifier array directly, OR an object
-  // { "modifiers": [...], "openOnTap": true }. `openOnTap` (default false) makes
-  // the submenu pop on a plain SHORT TAP of the host too, not just a long-press
-  // — the tap does the normal bare-select AND opens the submenu; the next short
-  // tap deselects (`finish`) and closes it. Long-press behaviour is unchanged.
-  // The bare-array form is equivalent to openOnTap:false.
+  // A submenu value is one of THREE forms:
+  //   1. the modifier array directly (=> openOnTap:false),
+  //   2. an object { "modifiers": [...], "openOnTap": true },
+  //   3. a STRING naming another key in `submenus` — a *reference*. The host
+  //      reuses the referenced definition's modifiers/openOnTap AND its submenu
+  //      id, so several buttons SHARE one submenu that opens at the SAME PLACE
+  //      (position/zoom persist under the single shared id). Each sharing host
+  //      still injects its own marker, and the submenu header shows the tapped
+  //      button's label. The target may be a real button label or a synthetic
+  //      definition key that is not a button anywhere (a pure shared template).
+  // `openOnTap` (default false) makes the submenu pop on a plain SHORT TAP of the
+  // host too, not just a long-press — the tap does the normal bare-select AND
+  // opens the submenu; the next short tap deselects (`finish`) and closes it.
+  // Long-press behaviour is unchanged. The bare-array form equals openOnTap:false.
   "submenus": {
     "Injection": ["Lift", "Hemostasis", ...],                       // array form => openOnTap:false
     "Biopsy":    { "openOnTap": true, "modifiers": ["Forceps", ...] },
     // If "Hemostasis" appears inside another submenu, this same entry makes it
     // a nested host there too.
-    "Hemostasis": ["Hemoclip", "Thermal", ...]
+    "Hemostasis": ["Hemoclip", "Thermal", ...],
+    // Shared submenu: define once (here a synthetic key), reference from many.
+    "SegmentStatus": { "openOnTap": true, "modifiers": ["Landmarked", ...] },
+    "Illeum":  "SegmentStatus",   // shares SegmentStatus, opens at the same place
+    "R.Colon": "SegmentStatus"
   }
 }
 ```
