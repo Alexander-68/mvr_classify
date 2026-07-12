@@ -1,0 +1,46 @@
+{
+  "recordingWarning": {
+    "text": "Recording is not active. Start recording on the MVR before adding timeline annotations.",
+    "backgroundColor": "#f59e0b"
+  },
+  "clusters": [
+    {
+      "id": "Data",
+      "exclusive": true,
+      "recordingWarning": false,
+      "buttons": ["Trial Timeframe", "Current Disease", "Camera model", "Open Forceps Size (mm)"]
+    },
+    {
+      "id": "Segments",
+      "exclusive": true,
+      "buttons": ["Illeum", "R.Colon", "Tv.Colon", "L.Colon", "S.Colon", "Rectum"]
+    },
+    {
+      "id": "Actions",
+      "exclusive": false,
+      "buttons": ["Status", "Withdrawal", "Injection", "Hemostasis", "Biopsy", "Polyp"]
+    }
+  ],
+  "submenus": {
+    "Injection":  { "openOnTap": false, "modifiers": ["Lift", "Hemostasis", "Botox", "Steroid", "Tattoo", "Contrast"] },
+    "Hemostasis": { "openOnTap": false, "modifiers": ["Hemoclip", "Thermal", "APC", "Injection", "Band", "Topical", "Surgical"] },
+    "Biopsy":     { "openOnTap": false, "modifiers": ["Forceps", "FNA/FNB", "Brush", "Snare", "Suction"] },
+    "Polyp":      { "openOnTap": false, "modifiers": ["Forceps", "Cold Snare", "Hot Snare", "EMR", "ESD", "EFTR", "APC/Ablation", "Part.Resected", "Fully Resected", "Surgical"] },
+    "Status":     { "openOnTap": true, "modifiers": ["Normal", "Inaccessible", "Not Explored", "Disease", "Hemorrhoids", "Cancer/Tumor"] },
+    "Disease":    { "openOnTap": true, "modifiers": ["Ulcer.Colitis", "Infect.Colitis", "Ischem.Colitis", "Crohn's", "Diverticulosis", "Diverticulitis"] },
+    "Trial Timeframe": { "openOnTap": true, "modifiers": ["Beginning", "10th week", "20th week", "30th week", "40th week", "52th week" ] },
+    "Camera model": { "openOnTap": true, "modifiers": ["CF-Q180AL", "CF-H180DL", "EC-3890Zi", "EC-380LKP", "EC-530WL", "Other" ] },
+    "Open Forceps Size (mm)": { "openOnTap": true, "modifiers": ["4", "5", "6", "7", "8", "9", "10" ] },
+    "Current Disease": { "openOnTap": true, "modifiers": ["Ulcer.Colitis", "Crohn's" ] }
+  },
+  "aiScope": {
+    "id": "ai_classes",
+    "movingAverage": 12,
+    "graph": { "id": "ai_graph", "windowSeconds": 30, "width": 320, "height": 84, "maxSamples": 216000, "downsample": 3,
+      "recordingFillColor": "rgba(64, 64, 255, 0.16)", "recordingEdgeColor": "rgba(80, 80, 255, 0.9)", "snapshotColor": "rgba(120, 210, 255, 0.9)" },
+    "classes": [
+      { "cls": 0, "label": "Blur", "color": "#ff69b4", "threshold": 50 },
+      { "cls": 1, "label": "PooP", "color": "#8a5a2b", "threshold": 60 }
+    ]
+  }
+}
