@@ -2472,8 +2472,16 @@
 
   // Emit a timeline event carrying each class's per-video above-threshold result
   // (fired on rec_pause and rec_stop, before the display reverts to per-study).
+  // Only inject if this session actually folded AI samples during the recording
+  // (some class has vAccCount > 0). This is a live-only side effect, but the
+  // connect-time replay of `/study/events` can re-deliver a *previous* study's
+  // rec_start/rec_stop tail (see MVR_homeweb_sse.md), which would otherwise
+  // re-fire this with an empty accumulator and leak a spurious `pct:0`
+  // video_summary into the new study. A genuine recording with all scores below
+  // threshold still has vAccCount > 0, so it keeps injecting its legit pct:0.
   function injectVideoAccEvent() {
     if (!aiCluster) return;
+    if (!aiCluster.indicators.some((ind) => ind.vAccCount > 0)) return;
     const classes = aiCluster.indicators.map((ind) => ({
       cls: ind.cls,
       pct: accPercent(ind.vAccSum, ind.vAccCount, ind.threshold) || 0,
